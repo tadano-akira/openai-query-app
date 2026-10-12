@@ -93,3 +93,60 @@ OpenAI 管理画面のプロジェクト予算アラートも併用すること�
 
 データは named volume（`oqa-app_db_data`、`oqa-langfuse_*`）に保存される。
 `docker compose down -v` はデータを削除するので通常は使わない。volume 自体はバックアップではない。
+
+## 保存期間・バックアップ・復元
+
+| 対象 | 保存期間 | バックアップ |
+| --- | --- | --- |
+| アプリ DB（会話・回答・計測値の正本） | 無期限（非表示の会話も残す） | 毎日、R2 に 30 世代 |
+| Langfuse の Postgres（ユーザー・プロジェクト・API キー） | 無期限 | 毎日、R2 に 30 世代 |
+| `.env`、`langfuse/.env` | — | 上記と同じ世代に含める（`ENCRYPTION_KEY` 等がないと復元できないため） |
+| Langfuse のトレース（ClickHouse） | 無期限（セルフホスト OSS 版に保持期間設定がない）。1年後または 1GB 超で見直す | 対象外（計測値の正本はアプリ DB） |
+| ClickHouse 自身の動作ログ（`system.*_log`） | 7日（`langfuse/clickhouse/system-log-ttl.xml`） | 対象外 |
+
+バックアップは `scripts/backup.sh` で取る。pg_dump（custom 形式）→ age 暗号化 → Cloudflare R2 の
+`<R2_BUCKET>/openai-query-app/<UTC時刻>/` へ保存し、30 日より古い世代はこのプレフィックス配下だけ削除する
+（バケットは kaikei と共用のため、バケットのライフサイクル設定は変更しない）。
+
+```bash
+scripts/backup.sh                       # R2 へ（aws CLI と ~/.aws/credentials が必要）
+scripts/backup.sh --local ./backups     # ローカル保存のみ（手動確認用）
+```
+
+`.env` に設定する値:
+
+| 変数 | 内容 |
+| --- | --- |
+| `BACKUP_PUBLIC_KEY` | age 公開鍵（必須。kaikei と共通。復号鍵はサーバーに置かない） |
+| `R2_BUCKET` / `R2_ENDPOINT` | R2 のバケット名とエンドポイント（エンドポイントにバケット名を含めない） |
+| `R2_PREFIX` | 保存先プレフィックス（既定 `openai-query-app`） |
+| `BACKUP_RETENTION_DAYS` | 保持日数（既定 30） |
+| `BACKUP_HEARTBEAT_URL` | Healthchecks.io の Ping URL（任意。成功時のみ送る） |
+
+日次の自動実行（systemd timer）と Healthchecks.io 登録は t430-server 移行時に設定する。
+
+### 復元テスト（3か月ごと）
+
+本番 DB には触れず、一時 DB（`oqa_restore_check`）へ復元して件数を確認し、終了時に削除する。
+
+```bash
+aws s3 cp s3://<R2_BUCKET>/openai-query-app/<STAMP>/ ./restore --recursive --endpoint-url <R2_ENDPOINT>
+scripts/restore_check.sh ./restore <age 秘密鍵ファイル>
+```
+
+### 本番への復元
+
+1. 世代を取得して復号する（`age -d -i <秘密鍵> -o app.dump app.dump.age` など）。`sha256sum -c SHA256SUMS` で照合する。
+2. `env.tar` から `.env` / `langfuse/.env` を戻す（新しい環境の場合）。
+3. 空の DB を用意して起動し、アプリ DB を戻す。
+
+   ```bash
+   docker compose stop backend
+   docker compose exec -T db dropdb -U app app
+   docker compose exec -T db createdb -U app app
+   docker compose exec -T db pg_restore --no-owner -U app -d app < app.dump
+   docker compose start backend
+   ```
+
+4. Langfuse は web / worker を止めてから同様に `postgres` DB を戻す（`-U postgres -d postgres`）。
+   ClickHouse のトレースは戻らないため、Langfuse 上の過去トレースは表示されなくなる。

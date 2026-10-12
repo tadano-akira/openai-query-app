@@ -1,0 +1,20 @@
+<!--
+  ClickHouse 自身の動作ログ（system.*_log）を 7 日で削除する。
+  既定では無期限に溜まり、実測で約 75MB/日（年 27GB 程度）増えるため。
+  asynchronous_insert_log / processors_profile_log / opentelemetry_span_log は既定設定で engine を指定
+  しており ttl を併用できないため対象外（いずれも小さい）。
+  Langfuse のトレース本体（default データベース）には影響しない。
+  TTL を変えると ClickHouse は起動時に旧テーブルを <name>_0 等へ退避するので、退避分は手動で DROP する。
+-->
+<clickhouse>
+  <asynchronous_metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></asynchronous_metric_log>
+  <background_schedule_pool_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></background_schedule_pool_log>
+  <error_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></error_log>
+  <metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></metric_log>
+  <part_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></part_log>
+  <query_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_log>
+  <query_metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_metric_log>
+  <query_views_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_views_log>
+  <text_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></text_log>
+  <trace_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></trace_log>
+</clickhouse>
