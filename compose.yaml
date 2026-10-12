@@ -1,0 +1,74 @@
+# アプリ一式（開発用）: PostgreSQL / FastAPI / Vite
+# Langfuse は langfuse/compose.yaml の別プロジェクト
+name: oqa-app
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: docker.io/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: app
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:?}@db:5432/app
+      # Windows のバインドマウントは inotify が届かないためポーリングで検知
+      WATCHFILES_FORCE_POLLING: "true"
+    command: >
+      sh -c "uv sync --locked --no-install-project &&
+             alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --workers 1"
+    ports:
+      - 127.0.0.1:8000:8000
+    volumes:
+      - ./backend:/app
+      - backend_venv:/opt/venv
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    logging: *logging
+
+  frontend:
+    image: node:24-slim
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      - backend
+    environment:
+      API_PROXY_TARGET: http://backend:8000
+      CHOKIDAR_USEPOLLING: "true"
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    ports:
+      - 127.0.0.1:5173:5173
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    logging: *logging
+
+volumes:
+  db_data:
+  backend_venv:
+  frontend_node_modules:
