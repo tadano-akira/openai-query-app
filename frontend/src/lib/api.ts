@@ -49,6 +49,8 @@ export type Run = {
   created_at: string
   generated_at: string | null
   usage: Usage
+  /** モデル別単価による推定料金（USD）。単価未定義のモデルは null */
+  estimated_cost_usd: number | null
   timings: Timings
   error: { code: string; message: string | null } | null
   openai_response_id: string | null
@@ -98,6 +100,8 @@ export type ConversationStats = {
   input_tokens: number
   output_tokens: number
   total_tokens: number
+  estimated_cost_usd: number
+  unknown_cost_run_count: number
   avg_client_duration_ms: number | null
   client_duration_sample_count: number
   avg_openai_duration_ms: number | null
@@ -125,6 +129,20 @@ export type ConversationDetail = {
   models: string[]
   turns: Turn[]
   stats: ConversationStats
+}
+
+export type UsagePeriod = {
+  run_count: number
+  run_limit: number | null
+  cost_usd: number
+  cost_limit_usd: number | null
+}
+
+export type UsageSummary = {
+  timezone: string
+  today: UsagePeriod
+  month: UsagePeriod
+  unknown_cost_run_count: number
 }
 
 export type LangfuseStatus = {
@@ -171,6 +189,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getUsage: () => request<UsageSummary>('/api/v1/usage'),
   listModels: () => request<{ models: string[]; default: string }>('/api/v1/models'),
   listConversations: (offset = 0, limit = 30) =>
     request<{ items: ConversationSummary[]; total: number; limit: number; offset: number }>(

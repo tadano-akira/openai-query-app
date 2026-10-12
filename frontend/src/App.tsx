@@ -115,6 +115,7 @@ export default function App() {
     } catch (e) {
       setPending(null)
       showError(e)
+      void queryClient.invalidateQueries({ queryKey: ['usage'] })
       return false
     }
     setPending(null)
@@ -125,6 +126,7 @@ export default function App() {
     }
     void queryClient.invalidateQueries({ queryKey: ['conversation', convId] })
     void queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    void queryClient.invalidateQueries({ queryKey: ['usage'] })
     return true
   }
 

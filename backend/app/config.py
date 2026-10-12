@@ -12,10 +12,12 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.5"
     # 画面で選択できるモデル（カンマ区切り）。openai_model は常に含める
     openai_models: str = "gpt-5.5,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-4.1,gpt-4.1-mini"
-    openai_timeout_seconds: float = 120.0
+    # Cloudflare Tunnel 経由の配信は 100 秒で打ち切られるため、それより短くする
+    openai_timeout_seconds: float = 90.0
     # 自動再試行は既定で行わない（重複課金を避ける）。対象は 429 / 5xx / 接続エラーのみ
     openai_max_retries: int = 0
-    max_output_tokens: int | None = None
+    # 推論トークンを含む出力上限
+    max_output_tokens: int | None = 8_000
     prompt_version: str = "v1"
     system_prompt: str = (
         "あなたは日本語で回答するアシスタントです。"
@@ -24,7 +26,14 @@ class Settings(BaseSettings):
 
     max_prompt_chars: int = 20_000
     # 文脈上限（文字数ベースの簡易判定）。超過時は送信せずエラーとして通知する
-    max_context_chars: int = 200_000
+    max_context_chars: int = 60_000
+
+    # 利用上限（0 は無制限）。料金はモデル別単価からの推定値で判定する
+    daily_run_limit: int = 100
+    daily_cost_limit_usd: float = 3.0
+    monthly_cost_limit_usd: float = 30.0
+    # 「1日」「1か月」の区切りに使うタイムゾーン
+    usage_timezone: str = "Asia/Tokyo"
 
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""

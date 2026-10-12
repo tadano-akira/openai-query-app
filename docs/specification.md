@@ -1,8 +1,8 @@
 # OpenAI API 技術検証Webアプリ 仕様書
 
-- バージョン：0.4（構成・基本設計案）
+- バージョン：0.5（構成・基本設計案）
 - 作成日：2026-10-12
-- 更新日：2026-10-12（モデル切替・会話の削除（非表示）を追加）
+- 更新日：2026-10-12（入出力長・タイムアウト・利用上限を確定、推定料金を追加）
 - ステータス：初期実装済み。詳細設計の未確定事項あり。
 - プロジェクト名：openai-query-app
 
@@ -264,7 +264,7 @@ Web検索ONでは `tool_choice: "required"` で検索の実行を求める。実
 | 識別情報 | 会話ID、ターンID、実行ID、API呼び出しID、OpenAI応答ID、LangfuseトレースID |
 | 検索情報 | 検索ツール実行の有無、取得可能なツール呼び出し情報 |
 
-使用量はAPIの返却値を保存し、未取得をゼロとして扱わない。内訳トークンを合計へ重複加算しない。費用表示を追加する場合はトークンと検索ツールの課金を区別するが、正確な費用算定は初期必須要件としない。
+使用量はAPIの返却値を保存し、未取得をゼロとして扱わない。内訳トークンを合計へ重複加算しない。推定料金は、API呼び出しごとのトークン料金（キャッシュ済み入力・長文脈単価を区別）と、Web検索の呼び出し料金（1回$0.01）の合計とする。モデル別単価は `pricing.py` に定義し、単価未定義のモデルはnull（不明）とする。推定料金は利用上限の判定と画面表示に使う目安であり、請求額との一致は保証しない。
 
 ### 8.3 会話全体の集計とトークンの解釈
 
@@ -297,6 +297,7 @@ Web検索ONでは `tool_choice: "required"` で検索の実行を求める。実
 | bad_request／upstream_error | リクエスト不正・OpenAI側障害 |
 | db_error | DB保存失敗 |
 | busy | 同時実行上限 |
+| usage_limit_exceeded | 利用上限（1日の実行回数、1日・1か月の推定利用額）超過。HTTP 429 |
 | interrupted | 再起動による中断 |
 
 ## 9. データ設計案
@@ -324,7 +325,7 @@ turns→messages、messages→runs の外部キーは循環参照になるため
 | 状態 | status（running／succeeded／failed／interrupted）、outcome（answered／search_not_executed／incomplete:理由） |
 | 時刻 | created_at、started_at、completed_at |
 | 時間 | backend_duration_ms、openai_duration_ms、db_duration_ms、client_duration_ms |
-| 使用量 | input_tokens、output_tokens、total_tokens、cached_input_tokens、reasoning_tokens |
+| 使用量 | input_tokens、output_tokens、total_tokens、cached_input_tokens、reasoning_tokens、estimated_cost_usd |
 | エラー | error_code、機密情報を除いたerror_message |
 | 外部識別 | openai_response_id、langfuse_trace_id、langfuse_status |
 
@@ -337,6 +338,7 @@ turns→messages、messages→runs の外部キーは循環参照になるため
 | メソッド | パス | 用途 |
 | --- | --- | --- |
 | GET | /api/v1/models | 選択可能なモデルと既定モデル |
+| GET | /api/v1/usage | 当日・当月の実行回数と推定利用額、上限値 |
 | POST | /api/v1/conversations | 新規会話作成 |
 | GET | /api/v1/conversations | 会話一覧と集計、使用モデル |
 | GET | /api/v1/conversations/{id} | 会話詳細、メッセージ、計測概要、使用モデル |
@@ -394,7 +396,21 @@ RAM 16GBはWindows、ブラウザ、VS Code、Docker Desktop、全コンテナ�
 - OpenAI APIキーとLangfuseの認証情報はバックエンド側の環境変数で管理し、フロントへ埋め込まない。
 - シークレットをGitやログへ保存しない。`.env` は `scripts/init_env.py` で生成し、Git管理外とする。
 - モデル名、各サービスURL、タイムアウト、入力長、出力上限を設定項目とする。
-- APIの利用回数などの制限値は実装前に決める。
+- 上限値は次のとおりとする（v0.5で確定、いずれも環境変数で変更可）。
+
+| 項目 | 値 | 根拠 |
+| --- | --- | --- |
+| 入力長 `MAX_PROMPT_CHARS` | 20,000字 | 長文の貼り付けを許容。1回の費用は小さい |
+| 文脈上限 `MAX_CONTEXT_CHARS` | 60,000字 | 毎回全文脈を再送するため、1回の費用を抑える（gpt-5.5で最大約$0.3） |
+| 出力上限 `MAX_OUTPUT_TOKENS` | 8,000 | 推論トークンを含む。実測最大1,256の約6倍 |
+| タイムアウト `OPENAI_TIMEOUT_SECONDS` | 90秒 | Cloudflare Tunnelの100秒制限より短くする。実測最大18秒 |
+| 自動再試行 `OPENAI_MAX_RETRIES` | 0 | 重複課金を避ける |
+| 1日の実行回数 `DAILY_RUN_LIMIT` | 100回 | 失敗を含むすべての実行を数える |
+| 1日／1か月の推定利用額 | $3／$30 | モデル間で単価が最大25倍異なるため、回数ではなく金額で制限する |
+
+- 利用上限は実行前に判定する。上限到達後の実行は429で拒否し、実行を作成しない。直前の1回で上限をわずかに超えることは許容する。
+- 1日・1か月の区切りは `USAGE_TIMEZONE`（既定はAsia/Tokyo）とする。
+- OpenAI管理画面のプロジェクト予算アラートを最終的な安全策として併用する。
 - 外部ページ本文をアプリ側の命令として扱わず、検索先設定などの制御を変更させない。
 - 回答内リンクはHTTP／HTTPS等の許可スキームに制限し、Markdownの生HTMLは無効にする。
 - ローカル限定でもバックエンドで入力検証する。
@@ -438,7 +454,7 @@ RAM 16GBはWindows、ブラウザ、VS Code、Docker Desktop、全コンテナ�
 1. ~~正式なプロジェクト名とリポジトリ名~~ → openai-query-app（v0.3で確定）。
 2. ~~OpenAIの使用モデルの最終決定、モデル切替UIの要否~~ → 切替UIを実装（v0.4）。既定はgpt-5.5、候補は `OPENAI_MODELS` で設定。
 3. ~~各依存ライブラリ、Langfuse、コンテナのバージョン~~ → §3.1で固定（v0.3）。
-4. 入力長・出力長・タイムアウト・利用回数の上限。初期値は§12の設定項目で仮置き。
+4. ~~入力長・出力長・タイムアウト・利用回数の上限~~ → §12で確定（v0.5）。
 5. 再試行方針とAPIエラーの詳細スキーマ。初期版は自動再試行なし。
 6. 履歴とトレースの保持期間、削除・バックアップ方針。
 7. ~~Web検索ONを初期値とする案の最終確定~~ → ON（v0.3で確定）。
@@ -466,5 +482,6 @@ RAM 16GBはWindows、ブラウザ、VS Code、Docker Desktop、全コンテナ�
 | --- | --- | --- |
 | 0.1 | 2026-10-12 | ローカル技術検証用の構成・基本設計を作成 |
 | 0.2 | 2026-10-12 | ChatGPTのようなUIからOpenAI APIを利用する目的を明確化。複数ターン会話、会話／各応答の観測、文脈保存、データ・API設計を更新 |
+| 0.5 | 2026-10-12 | 入出力長・文脈・タイムアウト・利用上限を確定。推定料金の記録・表示と利用上限（429）を追加 |
 | 0.4 | 2026-10-12 | 画面でのモデル切替と会話ごとの使用モデル表示、会話の削除（非表示、データは保持）を追加。モデル候補にgpt-5.6系（sol／terra／luna）を含める |
 | 0.3 | 2026-10-12 | WSL Ubuntuを使わずDocker Desktopのみで実行する方式に変更。プロジェクト名・採用バージョン・Web検索既定値・画面待ち時間追記APIを確定。Langfuse v4のAPI差異、エラー区分、HTTP応答方針を追記 |

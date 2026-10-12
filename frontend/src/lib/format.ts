@@ -26,6 +26,15 @@ export function formatTokens(n: number | null | undefined): string {
   return n == null ? '不明' : n.toLocaleString('ja-JP')
 }
 
+/** 推定料金。少額でも 0 に丸めないよう桁数を変える */
+export function formatUsd(usd: number | null | undefined): string {
+  if (usd == null) return '不明'
+  if (usd === 0) return '$0'
+  if (usd < 0.01) return `$${usd.toFixed(4)}`
+  if (usd < 1) return `$${usd.toFixed(3)}`
+  return `$${usd.toFixed(2)}`
+}
+
 export const ERROR_LABELS: Record<string, string> = {
   timeout: 'タイムアウト',
   network_error: '通信エラー',
@@ -40,6 +49,8 @@ export const ERROR_LABELS: Record<string, string> = {
   interrupted: '中断',
   internal_error: '内部エラー',
   busy: '処理中',
+  usage_limit_exceeded: '利用上限',
+  invalid_model: '選択できないモデル',
 }
 
 export function errorLabel(code: string): string {

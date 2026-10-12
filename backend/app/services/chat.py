@@ -16,9 +16,10 @@ from sqlalchemy.orm import selectinload
 from app.config import Settings
 from app.db import SessionLocal
 from app.models import ApiCall, Conversation, Message, Run, RunStatus, Turn, utcnow
-from app.services import openai_io
+from app.services import openai_io, pricing
 from app.services.serializers import run_to_out
 from app.services.tracing import LangfuseStatus, Tracer
+from app.services.usage import exceeded_reason, usage_summary
 
 log = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ class ChatService:
             db = DbTimer()
             async with db.measure():
                 conv = await self._load_conversation(session, conversation_id)
+                await self._check_usage(session)
             context, context_ids = build_context(conv.turns)
             self._check_context(context, prompt)
 
@@ -160,6 +162,7 @@ class ChatService:
                 if turn is None:
                     raise ChatError(404, "not_found", "ターンが見つかりません")
                 conv = await self._load_conversation(session, turn.conversation_id)
+                await self._check_usage(session)
             if max(t.seq for t in conv.turns) != turn.seq:
                 raise ChatError(409, "not_latest_turn", "再実行できるのは直近のターンだけです")
             if not turn.runs or turn.user_message is None:
@@ -215,6 +218,11 @@ class ChatService:
                 f"会話の文脈が上限（{self.settings.max_context_chars:,} 文字）を超えています（{size:,} 文字）。"
                 "新規チャットで続けてください",
             )
+
+    async def _check_usage(self, session: AsyncSession) -> None:
+        reason = exceeded_reason(await usage_summary(session, self.settings))
+        if reason:
+            raise ChatError(429, "usage_limit_exceeded", reason)
 
     async def _load_conversation(self, session: AsyncSession, conversation_id: uuid.UUID) -> Conversation:
         conv = await session.scalar(
@@ -393,6 +401,11 @@ class ChatService:
         for f in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens", "reasoning_tokens"):
             known = [getattr(c, f) for c in calls if getattr(c, f) is not None]
             setattr(run, f, sum(known) if known else None)
+        run.estimated_cost_usd = pricing.run_cost_usd(
+            run.model,
+            [(c.input_tokens, c.cached_input_tokens, c.output_tokens) for c in calls],
+            parsed.search_info.get("call_count", 0) if parsed is not None else 0,
+        )
 
         assistant_msg: Message | None = None
         if parsed is not None:

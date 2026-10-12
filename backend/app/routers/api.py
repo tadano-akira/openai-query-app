@@ -22,10 +22,12 @@ from app.schemas import (
     RunDetailOut,
     RunOut,
     TurnOut,
+    UsageSummary,
 )
 from app.services.chat import DEFAULT_TITLE, ChatError, ChatService
 from app.services.serializers import conversation_stats, run_to_detail, run_to_out
 from app.services.tracing import Tracer
+from app.services.usage import usage_summary
 
 router = APIRouter()
 
@@ -71,6 +73,12 @@ async def _models_by_conversation(session: AsyncSession, ids: list[uuid.UUID]) -
 async def list_models():
     settings = get_settings()
     return ModelList(models=settings.available_models, default=settings.openai_model)
+
+
+@router.get("/api/v1/usage", response_model=UsageSummary)
+async def get_usage(session: AsyncSession = Depends(get_session)):
+    """当日・当月の実行回数と推定利用額、上限値。"""
+    return await usage_summary(session, get_settings())
 
 
 @router.post("/api/v1/conversations", response_model=ConversationSummary, status_code=201)

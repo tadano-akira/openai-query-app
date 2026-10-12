@@ -4,6 +4,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { UsagePanel } from '@/components/UsagePanel'
 import { ApiError, api, type ConversationSummary } from '@/lib/api'
 import { formatDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -113,6 +114,7 @@ export function ConversationSidebar({
           </Button>
         </div>
       )}
+      <UsagePanel />
     </aside>
   )
 }

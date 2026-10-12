@@ -1,5 +1,5 @@
 import type { ConversationStats } from '@/lib/api'
-import { formatMs } from '@/lib/format'
+import { formatMs, formatUsd } from '@/lib/format'
 
 function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
@@ -17,13 +17,18 @@ export function StatsBar({ stats }: { stats: ConversationStats }) {
       ? `取得済み分の合計・不明 ${stats.unknown_usage_call_count}件`
       : `入力 ${stats.input_tokens.toLocaleString()} / 出力 ${stats.output_tokens.toLocaleString()}`
   return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-2 border-b px-4 py-2 sm:grid-cols-3 lg:grid-cols-6">
+    <div className="grid grid-cols-2 gap-x-6 gap-y-2 border-b px-4 py-2 sm:grid-cols-3 lg:grid-cols-7">
       <Stat
         label="実行回数"
         value={`${stats.run_count}`}
         note={`成功 ${stats.succeeded_count} / 失敗 ${stats.failed_count}`}
       />
       <Stat label="累計トークン" value={stats.total_tokens.toLocaleString()} note={tokenNote} />
+      <Stat
+        label="推定料金"
+        value={formatUsd(stats.estimated_cost_usd)}
+        note={stats.unknown_cost_run_count > 0 ? `単価不明 ${stats.unknown_cost_run_count}件を除く` : '単価からの目安'}
+      />
       <Stat
         label="平均応答時間（画面）"
         value={formatMs(stats.avg_client_duration_ms)}

@@ -35,6 +35,7 @@ def run_to_out(
             cached_input_tokens=run.cached_input_tokens,
             reasoning_tokens=run.reasoning_tokens,
         ),
+        estimated_cost_usd=run.estimated_cost_usd,
         timings=Timings(
             backend_duration_ms=run.backend_duration_ms,
             openai_duration_ms=run.openai_duration_ms,
@@ -78,6 +79,10 @@ def conversation_stats(runs: list[Run], calls: list[ApiCall]) -> ConversationSta
         input_tokens=sum(c.input_tokens or 0 for c in calls),
         output_tokens=sum(c.output_tokens or 0 for c in calls),
         total_tokens=sum(c.total_tokens or 0 for c in calls),
+        estimated_cost_usd=sum(r.estimated_cost_usd or 0 for r in runs),
+        unknown_cost_run_count=sum(
+            r.estimated_cost_usd is None and r.status != RunStatus.RUNNING for r in runs
+        ),
         avg_client_duration_ms=_avg(client),
         client_duration_sample_count=len(client),
         avg_openai_duration_ms=_avg(openai_ms),

@@ -6,7 +6,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { Run, Turn } from '@/lib/api'
-import { errorLabel, formatDate, formatMs, formatTokens, outcomeLabel } from '@/lib/format'
+import { errorLabel, formatDate, formatMs, formatTokens, formatUsd, outcomeLabel } from '@/lib/format'
 
 export function UserBubble({ text }: { text: string }) {
   return (
@@ -115,6 +115,7 @@ export function TurnView({
             <span>
               入力 {formatTokens(run.usage.input_tokens)} / 出力 {formatTokens(run.usage.output_tokens)}
             </span>
+            <span title="モデル別単価による推定料金">推定 {formatUsd(run.estimated_cost_usd)}</span>
             <span>{run.model}</span>
             <span>{formatDate(run.generated_at ?? run.created_at)}</span>
             <Button variant="ghost" size="xs" onClick={() => onShowDetail(run.request_id)}>

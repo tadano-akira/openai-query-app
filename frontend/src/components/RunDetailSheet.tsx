@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { api } from '@/lib/api'
-import { errorLabel, formatDate, formatMs, formatTokens } from '@/lib/format'
+import { errorLabel, formatDate, formatMs, formatTokens, formatUsd } from '@/lib/format'
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -80,8 +80,9 @@ export function RunDetailSheet({
               <Row label="出力トークン" value={formatTokens(run.usage.output_tokens)} />
               <Row label="　うち推論" value={formatTokens(run.usage.reasoning_tokens)} />
               <Row label="合計トークン" value={formatTokens(run.usage.total_tokens)} />
+              <Row label="推定料金" value={formatUsd(run.estimated_cost_usd)} />
               <p className="text-muted-foreground text-xs">
-                入力トークンにはシステム指示と過去の文脈を含みます。
+                入力トークンにはシステム指示と過去の文脈、検索結果の本文を含みます。推定料金はトークン数とモデル別単価、Web検索の呼び出し回数（1回$0.01）から計算した目安で、請求額とは一致しない場合があります。
               </p>
             </Section>
             <Separator />

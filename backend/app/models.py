@@ -2,7 +2,17 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -118,6 +128,8 @@ class Run(Base):
     total_tokens: Mapped[int | None] = mapped_column(BigInteger)
     cached_input_tokens: Mapped[int | None] = mapped_column(BigInteger)
     reasoning_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    # モデル別単価による推定料金（USD）。単価未定義のモデルは null
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6, asdecimal=False))
 
     error_code: Mapped[str | None] = mapped_column(String(60))
     error_message: Mapped[str | None] = mapped_column(Text)

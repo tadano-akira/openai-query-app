@@ -41,6 +41,22 @@ class ModelList(BaseModel):
     default: str
 
 
+class UsagePeriod(BaseModel):
+    run_count: int
+    run_limit: int | None
+    cost_usd: float
+    cost_limit_usd: float | None
+
+
+class UsageSummary(BaseModel):
+    """推定料金による利用状況。上限 0 は無制限（null で返す）"""
+
+    timezone: str
+    today: UsagePeriod
+    month: UsagePeriod
+    unknown_cost_run_count: int
+
+
 class ClientMetrics(BaseModel):
     client_duration_ms: int = Field(ge=0, le=24 * 3600 * 1000)
 
@@ -110,6 +126,7 @@ class RunOut(BaseModel):
     created_at: datetime
     generated_at: datetime | None
     usage: Usage
+    estimated_cost_usd: float | None
     timings: Timings
     error: ErrorInfo | None
     openai_response_id: str | None
@@ -153,6 +170,8 @@ class ConversationStats(BaseModel):
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    estimated_cost_usd: float
+    unknown_cost_run_count: int
     avg_client_duration_ms: float | None
     client_duration_sample_count: int
     avg_openai_duration_ms: float | None
