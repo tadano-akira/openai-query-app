@@ -101,6 +101,9 @@ class Run(Base):
     search_url: Mapped[str | None] = mapped_column(Text)
     searched_domain: Mapped[str | None] = mapped_column(String(255))
     model: Mapped[str] = mapped_column(String(100))
+    # 回答スタイルのモード（prompts/modes/<id>.md）。導入前の実行は standard
+    mode: Mapped[str | None] = mapped_column(String(40))
+    # システム指示（基本ルール＋モード）と API パラメータのハッシュ
     prompt_version: Mapped[str] = mapped_column(String(40))
     settings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     context_message_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)

@@ -17,7 +17,10 @@ from app.schemas import (
     ConversationSummary,
     MessageCreate,
     MessageOut,
+    ModeList,
     ModelList,
+    ModeOut,
+    ModeStat,
     RetryCreate,
     RunDetailOut,
     RunOut,
@@ -25,6 +28,7 @@ from app.schemas import (
     UsageSummary,
 )
 from app.services.chat import DEFAULT_TITLE, ChatError, ChatService
+from app.services.prompts import DEFAULT_MODE, PromptError, load_modes
 from app.services.serializers import conversation_stats, run_to_detail, run_to_out
 from app.services.tracing import Tracer
 from app.services.usage import usage_summary
@@ -73,6 +77,66 @@ async def _models_by_conversation(session: AsyncSession, ids: list[uuid.UUID]) -
 async def list_models():
     settings = get_settings()
     return ModelList(models=settings.available_models, default=settings.openai_model)
+
+
+@router.get("/api/v1/modes", response_model=ModeList)
+async def list_modes():
+    try:
+        modes = load_modes()
+    except PromptError as e:
+        raise HTTPException(503, detail={"code": "config_error", "message": str(e)}) from e
+    return ModeList(
+        modes=[
+            ModeOut(
+                id=m.id,
+                label=m.label,
+                description=m.description,
+                verbosity=m.verbosity,
+                reasoning_effort=m.reasoning_effort,
+            )
+            for m in modes
+        ],
+        default=DEFAULT_MODE,
+    )
+
+
+@router.get("/api/v1/stats/modes", response_model=list[ModeStat])
+async def mode_stats(session: AsyncSession = Depends(get_session)):
+    """モード別の実績（成功した実行の平均）。モード間の出力量・料金・時間の比較に使う。"""
+    mode = func.coalesce(Run.mode, DEFAULT_MODE)
+    rows = await session.execute(
+        select(
+            mode,
+            Run.model,
+            Run.web_search_enabled,
+            func.count(),
+            func.avg(Run.input_tokens),
+            func.avg(Run.output_tokens),
+            func.avg(Run.reasoning_tokens),
+            func.avg(func.length(Run.answer)),
+            func.avg(Run.estimated_cost_usd),
+            func.avg(Run.openai_duration_ms),
+        )
+        .where(Run.status == "succeeded")
+        .group_by(mode, Run.model, Run.web_search_enabled)
+        .order_by(mode, Run.model, Run.web_search_enabled)
+    )
+    f = lambda v: float(v) if v is not None else None  # noqa: E731
+    return [
+        ModeStat(
+            mode=r[0],
+            model=r[1],
+            web_search_enabled=r[2],
+            run_count=r[3],
+            avg_input_tokens=f(r[4]),
+            avg_output_tokens=f(r[5]),
+            avg_reasoning_tokens=f(r[6]),
+            avg_answer_chars=f(r[7]),
+            avg_cost_usd=f(r[8]),
+            avg_openai_duration_ms=f(r[9]),
+        )
+        for r in rows
+    ]
 
 
 @router.get("/api/v1/usage", response_model=UsageSummary)
@@ -223,7 +287,13 @@ async def send_message(
     t0 = time.perf_counter()
     try:
         return await chat.send_message(
-            conversation_id, body.prompt, body.web_search_enabled, body.search_url, t0, model=body.model
+            conversation_id,
+            body.prompt,
+            body.web_search_enabled,
+            body.search_url,
+            t0,
+            model=body.model,
+            mode=body.mode,
         )
     except ChatError as e:
         raise _chat_error(e) from e
@@ -237,7 +307,9 @@ async def retry_turn(
 ):
     t0 = time.perf_counter()
     try:
-        return await chat.retry_turn(turn_id, t0, model=body.model if body else None)
+        return await chat.retry_turn(
+            turn_id, t0, model=body.model if body else None, mode=body.mode if body else None
+        )
     except ChatError as e:
         raise _chat_error(e) from e
 

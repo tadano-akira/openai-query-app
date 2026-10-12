@@ -62,6 +62,41 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 - `node_modules` と Python venv は named volume に置いている。依存を変えたら
   `docker compose restart frontend` / `docker compose up -d --build backend`。
 
+## システム指示とモード
+
+モデルへ送るシステム指示は `backend/prompts/` のファイルで管理する（CLAUDE.md にあたる）。
+編集すると次の実行から反映され、再起動は不要。
+
+| ファイル | 内容 |
+| --- | --- |
+| `prompts/base.md` | 全モード共通の基本ルール |
+| `prompts/modes/<id>.md` | モードごとの追加指示。base.md の後ろに追記して送る |
+
+| モード | ID | 内容 |
+| --- | --- | --- |
+| 標準 | `standard` | 基本ルールのみ（モード導入前と同じ指示） |
+| トークン節約 | `token-saver` | 簡略化した日本語で要点だけ答える。gpt-5 系では `text.verbosity` と `reasoning.effort` も `low` にする |
+| ビジネス | `business` | ビジネスシーン向けの丁寧な文体と「結論→根拠→補足」の構成 |
+| やさしく説明 | `easy` | 専門知識がない人向けに、たとえを交えて順を追って説明する |
+
+モードファイルの書式（先頭の `---` で囲んだ設定と本文）:
+
+```markdown
+---
+label: トークン節約            # 画面の表示名（必須）
+description: 要点だけを…       # 選択時のツールチップ
+order: 2                       # 表示順
+verbosity: low                 # 任意: low / medium / high
+reasoning_effort: low          # 任意: minimal / low / medium / high
+---
+## 回答スタイル: …（本文がそのまま指示になる）
+```
+
+- `verbosity` / `reasoning_effort` は対応モデル（gpt-5 系）にだけ付ける。gpt-4.1 系は 400 エラーになるため指示文だけを適用する。
+- `<!-- -->` のコメントは読み込み時に除去され、モデルには送られない。
+- 指示文とパラメータのハッシュを `prompt_version` として実行ごとに記録する。Langfuse にもモードと版を送る。
+- サイドバーの「モード別の実績」で、モード×モデル×検索有無ごとの出力トークン・文字数・料金・時間を比較できる。
+
 ## 主な設定（.env）
 
 | 変数 | 既定 | 内容 |

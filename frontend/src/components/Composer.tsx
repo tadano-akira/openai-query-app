@@ -9,29 +9,35 @@ import { Textarea } from '@/components/ui/textarea'
 
 export type ComposerValue = { prompt: string; web_search_enabled: boolean; search_url: string | null }
 
-function ModelSelect({
-  models,
+export type SelectOption = { value: string; label: string; title?: string }
+
+function OptionSelect({
+  label,
+  options,
   value,
   onChange,
   disabled,
 }: {
-  models: string[]
+  label: string
+  options: SelectOption[]
   value: string | null
-  onChange: (model: string) => void
+  onChange: (value: string) => void
   disabled: boolean
 }) {
+  const current = options.find((o) => o.value === value)
   return (
     <select
-      aria-label="モデル"
+      aria-label={label}
+      title={current?.title ?? label}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
-      disabled={disabled || models.length === 0}
+      disabled={disabled || options.length === 0}
       className="border-input bg-background focus-visible:ring-ring/50 h-8 rounded-lg border px-2 text-sm outline-none focus-visible:ring-3 disabled:opacity-50"
     >
-      {models.length === 0 && <option value="">モデル取得中…</option>}
-      {models.map((m) => (
-        <option key={m} value={m}>
-          {m}
+      {options.length === 0 && <option value="">{label}取得中…</option>}
+      {options.map((o) => (
+        <option key={o.value} value={o.value} title={o.title}>
+          {o.label}
         </option>
       ))}
     </select>
@@ -55,12 +61,18 @@ export function Composer({
   models,
   model,
   onModelChange,
+  modes,
+  mode,
+  onModeChange,
 }: {
   disabled: boolean
   onSubmit: (v: ComposerValue) => Promise<boolean>
   models: string[]
   model: string | null
   onModelChange: (model: string) => void
+  modes: SelectOption[]
+  mode: string | null
+  onModeChange: (mode: string) => void
 }) {
   const [prompt, setPrompt] = useState('')
   const [webSearch, setWebSearch] = useState(true)
@@ -95,7 +107,14 @@ export function Composer({
         disabled={disabled}
       />
       <div className="flex flex-wrap items-center gap-3">
-        <ModelSelect models={models} value={model} onChange={onModelChange} disabled={disabled} />
+        <OptionSelect
+          label="モデル"
+          options={models.map((m) => ({ value: m, label: m }))}
+          value={model}
+          onChange={onModelChange}
+          disabled={disabled}
+        />
+        <OptionSelect label="モード" options={modes} value={mode} onChange={onModeChange} disabled={disabled} />
         <div className="flex items-center gap-2">
           <Switch id="web-search" checked={webSearch} onCheckedChange={setWebSearch} />
           <Label htmlFor="web-search" className="text-sm">

@@ -21,10 +21,32 @@ function nextPaint(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
 }
 
-/** 会話で最後に実行したモデル */
-function lastModel(turns: Turn[]): string | null {
+/** 会話で最後に作成した実行 */
+function lastRun(turns: Turn[]): Run | null {
   const runs = turns.flatMap((t) => t.runs)
-  return runs.length ? runs.reduce((a, b) => (a.created_at > b.created_at ? a : b)).model : null
+  return runs.length ? runs.reduce((a, b) => (a.created_at > b.created_at ? a : b)) : null
+}
+
+/**
+ * 会話ごとの選択値（モデル・モード）。
+ * 優先順: この会話で選んだもの > 会話の最終使用値 > 直前に選んだもの > 既定
+ */
+function useConversationChoice(
+  conversationId: string | null,
+  available: string[],
+  lastUsed: string | null | undefined,
+  fallback: string | null | undefined,
+): [string | null, (value: string) => void] {
+  const [choice, setChoice] = useState<{ conversationId: string; value: string } | null>(null)
+  const key = conversationId ?? ''
+  const valid = (v: string | null | undefined) => (v && available.includes(v) ? v : null)
+  const value =
+    valid(choice?.conversationId === key ? choice.value : null) ??
+    valid(lastUsed) ??
+    valid(choice?.value) ??
+    fallback ??
+    null
+  return [value, (v) => setChoice({ conversationId: key, value: v })]
 }
 
 /**
@@ -53,11 +75,10 @@ export default function App() {
   const [error, setError] = useState<{ title: string; message: string } | null>(null)
   const [creating, setCreating] = useState(false)
   const [detailRunId, setDetailRunId] = useState<string | null>(null)
-  // 画面で選んだモデル。選んだ会話にだけ優先して適用する
-  const [modelChoice, setModelChoice] = useState<{ conversationId: string; model: string } | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const models = useQuery({ queryKey: ['models'], queryFn: api.listModels, staleTime: Infinity })
+  const modes = useQuery({ queryKey: ['modes'], queryFn: api.listModes })
 
   const conversation = useQuery({
     queryKey: ['conversation', selectedId],
@@ -127,25 +148,31 @@ export default function App() {
     void queryClient.invalidateQueries({ queryKey: ['conversation', convId] })
     void queryClient.invalidateQueries({ queryKey: ['conversations'] })
     void queryClient.invalidateQueries({ queryKey: ['usage'] })
+    void queryClient.invalidateQueries({ queryKey: ['mode-stats'] })
     return true
   }
 
   const data = selectedId ? conversation.data : undefined
   const busy = pending !== null
 
-  // 選択モデル: この会話で選んだもの > 会話の最終使用モデル > 直前に選んだもの > 既定
-  const available = models.data?.models ?? []
-  const valid = (m: string | null | undefined) => (m && available.includes(m) ? m : null)
-  const model =
-    valid(modelChoice?.conversationId === (selectedId ?? '') ? modelChoice.model : null) ??
-    valid(data ? lastModel(data.turns) : null) ??
-    valid(modelChoice?.model) ??
-    models.data?.default ??
-    null
-  const setModel = (m: string) => setModelChoice({ conversationId: selectedId ?? '', model: m })
+  const latest = data ? lastRun(data.turns) : null
+  const [model, setModel] = useConversationChoice(
+    selectedId,
+    models.data?.models ?? [],
+    latest?.model,
+    models.data?.default,
+  )
+  const modeList = modes.data?.modes ?? []
+  const [mode, setMode] = useConversationChoice(
+    selectedId,
+    modeList.map((m) => m.id),
+    latest?.mode,
+    modes.data?.default,
+  )
+  const modeLabels = Object.fromEntries(modeList.map((m) => [m.id, m.label]))
 
-  const send = (v: ComposerValue) => execute(v.prompt, (id) => api.sendMessage(id, { ...v, model }))
-  const retry = (turnId: string) => void execute(null, () => api.retryTurn(turnId, model))
+  const send = (v: ComposerValue) => execute(v.prompt, (id) => api.sendMessage(id, { ...v, model, mode }))
+  const retry = (turnId: string) => void execute(null, () => api.retryTurn(turnId, model, mode))
 
   function onHidden(id: string) {
     if (id === selectedId) select(null)
@@ -194,7 +221,14 @@ export default function App() {
               </Alert>
             )}
             {turns.map((t) => (
-              <TurnView key={t.id} turn={t} busy={busy} onRetry={retry} onShowDetail={setDetailRunId} />
+              <TurnView
+                key={t.id}
+                turn={t}
+                busy={busy}
+                modeLabels={modeLabels}
+                onRetry={retry}
+                onShowDetail={setDetailRunId}
+              />
             ))}
             {pending && (
               <div className="space-y-3">
@@ -222,6 +256,9 @@ export default function App() {
             models={models.data?.models ?? []}
             model={model}
             onModelChange={setModel}
+            modes={modeList.map((m) => ({ value: m.id, label: m.label, title: m.description }))}
+            mode={mode}
+            onModeChange={setMode}
           />
         </div>
       </main>

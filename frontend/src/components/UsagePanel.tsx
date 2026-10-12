@@ -1,5 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 
+import { ModeStatsSheet } from '@/components/ModeStatsSheet'
+import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import { formatUsd } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -29,6 +32,7 @@ const limitText = (v: string, limit: string | null) => (limit ? `${v} / ${limit}
 /** 当日・当月の実行回数と推定利用額（上限つき） */
 export function UsagePanel() {
   const { data } = useQuery({ queryKey: ['usage'], queryFn: api.getUsage })
+  const [statsOpen, setStatsOpen] = useState(false)
   if (!data) return null
   const { today, month } = data
   return (
@@ -52,6 +56,10 @@ export function UsagePanel() {
         limit={month.cost_limit_usd}
         text={limitText(formatUsd(month.cost_usd), month.cost_limit_usd != null ? formatUsd(month.cost_limit_usd) : null)}
       />
+      <Button variant="ghost" size="xs" className="-ml-2" onClick={() => setStatsOpen(true)}>
+        モード別の実績
+      </Button>
+      <ModeStatsSheet open={statsOpen} onOpenChange={setStatsOpen} />
       {data.unknown_cost_run_count > 0 && (
         <p className="text-muted-foreground text-[10px]">単価不明の実行 {data.unknown_cost_run_count}件は含みません</p>
       )}

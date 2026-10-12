@@ -11,6 +11,8 @@ class MessageCreate(BaseModel):
     search_url: str | None = None
     # 未指定時は既定モデル。選択可能なモデルかはサービス側で検証する
     model: str | None = None
+    # 回答スタイルのモード（prompts/modes/<id>.md）。未指定時は standard
+    mode: str | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -32,8 +34,38 @@ class MessageCreate(BaseModel):
 
 
 class RetryCreate(BaseModel):
-    # 未指定時は再実行元と同じモデル
+    # 未指定時は再実行元と同じモデル・モード
     model: str | None = None
+    mode: str | None = None
+
+
+class ModeOut(BaseModel):
+    id: str
+    label: str
+    description: str
+    # 対応モデル（gpt-5 系）にだけ付ける API パラメータ
+    verbosity: str | None
+    reasoning_effort: str | None
+
+
+class ModeList(BaseModel):
+    modes: list[ModeOut]
+    default: str
+
+
+class ModeStat(BaseModel):
+    """成功した実行のモード×モデル×検索有無ごとの平均。"""
+
+    mode: str
+    model: str
+    web_search_enabled: bool
+    run_count: int
+    avg_input_tokens: float | None
+    avg_output_tokens: float | None
+    avg_reasoning_tokens: float | None
+    avg_answer_chars: float | None
+    avg_cost_usd: float | None
+    avg_openai_duration_ms: float | None
 
 
 class ModelList(BaseModel):
@@ -121,6 +153,7 @@ class RunOut(BaseModel):
     searched_domain: str | None
     search_info: dict[str, Any] | None
     model: str
+    mode: str
     prompt_version: str
     context_message_count: int
     created_at: datetime

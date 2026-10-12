@@ -2,6 +2,7 @@ import uuid
 
 from app.models import ApiCall, Run, RunStatus
 from app.schemas import ApiCallOut, ConversationStats, ErrorInfo, RunDetailOut, RunOut, Timings, Usage
+from app.services.prompts import DEFAULT_MODE
 
 
 def run_to_out(
@@ -24,6 +25,7 @@ def run_to_out(
         searched_domain=run.searched_domain,
         search_info=run.search_info,
         model=run.model,
+        mode=run.mode or DEFAULT_MODE,
         prompt_version=run.prompt_version,
         context_message_count=len(run.context_message_ids or []),
         created_at=run.created_at,

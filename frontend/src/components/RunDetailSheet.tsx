@@ -12,8 +12,16 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { api } from '@/lib/api'
+import { api, type RunDetail } from '@/lib/api'
 import { errorLabel, formatDate, formatMs, formatTokens, formatUsd } from '@/lib/format'
+
+/** モードにより API へ付けたパラメータ（送信内容のスナップショットから） */
+function modeParams(run: RunDetail): string {
+  const req = run.request_snapshot as { text?: { verbosity?: string }; reasoning?: { effort?: string } } | null
+  const v = req?.text?.verbosity
+  const e = req?.reasoning?.effort
+  return v || e ? `${v ?? '既定'} / ${e ?? '既定'}` : '指定なし'
+}
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -55,7 +63,7 @@ export function RunDetailSheet({
 
   return (
     <Sheet open={!!runId} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+      <SheetContent className="w-full overflow-y-auto data-[side=right]:sm:max-w-xl">
         <SheetHeader>
           <SheetTitle>計測詳細</SheetTitle>
           <SheetDescription className="font-mono text-xs break-all">{runId}</SheetDescription>
@@ -89,7 +97,9 @@ export function RunDetailSheet({
             <Section title="実行条件・文脈">
               <Row label="状態" value={run.status} />
               <Row label="モデル" value={run.model} />
-              <Row label="プロンプト設定" value={run.prompt_version} />
+              <Row label="モード" value={run.mode} />
+              <Row label="指示の版" value={run.prompt_version} />
+              <Row label="回答の長さ / 推論の量" value={modeParams(run)} />
               <Row label="Web検索" value={run.web_search_enabled ? 'ON' : 'OFF'} />
               <Row label="検索先ドメイン" value={run.searched_domain ?? '制限なし'} />
               <Row

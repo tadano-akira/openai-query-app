@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.config import Settings
 from app.db import SessionLocal
 from app.models import ApiCall, Conversation, Message, Run, RunStatus, Turn, utcnow
-from app.services import openai_io, pricing
+from app.services import openai_io, pricing, prompts
 from app.services.serializers import run_to_out
 from app.services.tracing import LangfuseStatus, Tracer
 from app.services.usage import exceeded_reason, usage_summary
@@ -116,8 +116,10 @@ class ChatService:
         search_url: str | None,
         t0: float,
         model: str | None = None,
+        mode: str | None = None,
     ):
         model = self._model(model)
+        instr = self._instructions(mode)
         searched_domain = self._domain(search_url) if web_search_enabled and search_url else None
         if len(prompt) > self.settings.max_prompt_chars:
             raise ChatError(
@@ -132,7 +134,7 @@ class ChatService:
                 conv = await self._load_conversation(session, conversation_id)
                 await self._check_usage(session)
             context, context_ids = build_context(conv.turns)
-            self._check_context(context, prompt)
+            self._check_context(context, prompt, instr.text)
 
             turn = Turn(id=uuid.uuid4(), conversation_id=conv.id, seq=len(conv.turns) + 1)
             user_msg = Message(
@@ -140,9 +142,9 @@ class ChatService:
             )
             turn.user_message_id = user_msg.id
             run = self._new_run(
-                conv, turn, prompt, model, web_search_enabled, search_url, searched_domain, context_ids
+                conv, turn, prompt, model, instr, web_search_enabled, search_url, searched_domain, context_ids
             )
-            request = self._build_request(model, context, prompt, web_search_enabled, searched_domain)
+            request = self._build_request(model, instr, context, prompt, web_search_enabled, searched_domain)
             run.request_snapshot = request
 
             if conv.title == DEFAULT_TITLE and not conv.turns:
@@ -152,9 +154,13 @@ class ChatService:
             await self._commit_initial(session, db, [turn, user_msg, run])
             return await self._execute(session, Prepared(run, conv, turn, context, request, db), t0)
 
-    async def retry_turn(self, turn_id: uuid.UUID, t0: float, model: str | None = None):
+    async def retry_turn(
+        self, turn_id: uuid.UUID, t0: float, model: str | None = None, mode: str | None = None
+    ):
         if model is not None:
             model = self._model(model)
+        if mode is not None:
+            self._instructions(mode)  # ロック取得前に検証する
         async with single_run(), SessionLocal() as session:
             db = DbTimer()
             async with db.measure():
@@ -170,15 +176,17 @@ class ChatService:
 
             base = turn.runs[-1]
             model = model or base.model
+            instr = self._instructions(mode or base.mode)
             prompt = turn.user_message.content
             context, context_ids = build_context([t for t in conv.turns if t.seq < turn.seq])
-            self._check_context(context, prompt)
+            self._check_context(context, prompt, instr.text)
 
             run = self._new_run(
                 conv,
                 turn,
                 prompt,
                 model,
+                instr,
                 base.web_search_enabled,
                 base.search_url,
                 base.searched_domain,
@@ -186,7 +194,7 @@ class ChatService:
             )
             run.retry_of_run_id = base.id
             request = self._build_request(
-                model, context, prompt, base.web_search_enabled, base.searched_domain
+                model, instr, context, prompt, base.web_search_enabled, base.searched_domain
             )
             run.request_snapshot = request
             conv.updated_at = utcnow()
@@ -203,14 +211,24 @@ class ChatService:
             raise ChatError(422, "invalid_model", f"選択できないモデルです: {model}")
         return model
 
+    def _instructions(self, mode: str | None) -> prompts.Instructions:
+        try:
+            return prompts.build_instructions(mode)
+        except prompts.PromptError as e:
+            if isinstance(e, prompts.UnknownMode):
+                raise ChatError(422, "invalid_mode", str(e)) from e
+            # ファイルの破損などは設定不備として扱う
+            log.exception("failed to load prompts")
+            raise ChatError(503, "config_error", f"システム指示を読み込めません: {e}") from e
+
     def _domain(self, search_url: str) -> str:
         try:
             return openai_io.normalize_search_domain(search_url)
         except openai_io.InvalidSearchUrl as e:
             raise ChatError(422, "invalid_search_url", str(e)) from e
 
-    def _check_context(self, context: list[dict[str, str]], prompt: str) -> None:
-        size = _context_chars(context, prompt, self.settings.system_prompt)
+    def _check_context(self, context: list[dict[str, str]], prompt: str, instructions: str) -> None:
+        size = _context_chars(context, prompt, instructions)
         if size > self.settings.max_context_chars:
             raise ChatError(
                 422,
@@ -238,7 +256,7 @@ class ChatService:
         return conv
 
     def _new_run(
-        self, conv, turn, prompt, model, web_search_enabled, search_url, searched_domain, context_ids
+        self, conv, turn, prompt, model, instr, web_search_enabled, search_url, searched_domain, context_ids
     ) -> Run:
         now = utcnow()
         run = Run(
@@ -251,11 +269,14 @@ class ChatService:
             search_url=search_url if web_search_enabled else None,
             searched_domain=searched_domain,
             model=model,
-            prompt_version=self.settings.prompt_version,
+            mode=instr.mode.id,
+            prompt_version=instr.version,
             settings={
                 "timeout_seconds": self.settings.openai_timeout_seconds,
                 "max_retries": self.settings.openai_max_retries,
                 "max_output_tokens": self.settings.max_output_tokens,
+                # 実際に API へ付けたモードのパラメータ（非対応モデルでは null）
+                **self._mode_params(model, instr.mode),
             },
             context_message_ids=context_ids,
             created_at=now,
@@ -266,10 +287,20 @@ class ChatService:
             run.langfuse_status = LangfuseStatus.DISABLED
         return run
 
-    def _build_request(self, model, context, prompt, web_search_enabled, searched_domain) -> dict:
+    @staticmethod
+    def _mode_params(model: str, mode: prompts.Mode) -> dict[str, str | None]:
+        ok = openai_io.supports_reasoning_params(model)
+        return {
+            "verbosity": mode.verbosity if ok else None,
+            "reasoning_effort": mode.reasoning_effort if ok else None,
+        }
+
+    def _build_request(self, model, instr, context, prompt, web_search_enabled, searched_domain) -> dict:
         return openai_io.build_request(
             model=model,
-            instructions=self.settings.system_prompt,
+            instructions=instr.text,
+            verbosity=instr.mode.verbosity,
+            reasoning_effort=instr.mode.reasoning_effort,
             context=context,
             prompt=prompt,
             web_search_enabled=web_search_enabled,
@@ -317,7 +348,14 @@ class ChatService:
                 name="openai.responses.create",
                 model=run.model,
                 input=p.request["input"],
-                metadata={"attempt": attempt, "api_call_id": str(call.id), "tools": p.request.get("tools")},
+                metadata={
+                    "attempt": attempt,
+                    "api_call_id": str(call.id),
+                    "tools": p.request.get("tools"),
+                    "mode": run.mode,
+                    "text": p.request.get("text"),
+                    "reasoning": p.request.get("reasoning"),
+                },
             ) as gen:
                 t = time.perf_counter()
                 try:
@@ -374,7 +412,13 @@ class ChatService:
 
     async def _execute(self, session: AsyncSession, p: Prepared, t0: float):
         run, conv, turn, db = p.run, p.conversation, p.turn, p.db
-        metadata = {"conversation_id": str(conv.id), "turn_id": str(turn.id), "run_id": str(run.id)}
+        metadata = {
+            "conversation_id": str(conv.id),
+            "turn_id": str(turn.id),
+            "run_id": str(run.id),
+            "mode": run.mode or prompts.DEFAULT_MODE,
+            "prompt_version": run.prompt_version,
+        }
 
         with self.tracer.run_span(
             trace_id=run.langfuse_trace_id,

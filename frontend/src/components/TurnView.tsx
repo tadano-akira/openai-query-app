@@ -89,11 +89,13 @@ function RunBody({ run }: { run: Run }) {
 export function TurnView({
   turn,
   busy,
+  modeLabels,
   onRetry,
   onShowDetail,
 }: {
   turn: Turn
   busy: boolean
+  modeLabels: Record<string, string>
   onRetry: (turnId: string) => void
   onShowDetail: (runId: string) => void
 }) {
@@ -117,6 +119,7 @@ export function TurnView({
             </span>
             <span title="モデル別単価による推定料金">推定 {formatUsd(run.estimated_cost_usd)}</span>
             <span>{run.model}</span>
+            <span title="回答スタイルのモード">{modeLabels[run.mode] ?? run.mode}</span>
             <span>{formatDate(run.generated_at ?? run.created_at)}</span>
             <Button variant="ghost" size="xs" onClick={() => onShowDetail(run.request_id)}>
               <Gauge /> 計測詳細

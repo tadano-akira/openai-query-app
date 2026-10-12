@@ -34,6 +34,11 @@ def normalize_search_domain(url: str) -> str:
     return host
 
 
+def supports_reasoning_params(model: str) -> bool:
+    """text.verbosity / reasoning.effort を受け付けるモデルか（gpt-4.1 系は 400 になる。2026-10-12 確認）。"""
+    return model.startswith("gpt-5")
+
+
 def build_request(
     *,
     model: str,
@@ -43,6 +48,8 @@ def build_request(
     web_search_enabled: bool,
     searched_domain: str | None,
     max_output_tokens: int | None,
+    verbosity: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     """responses.create に渡す引数を組み立てる。この dict をそのまま送信内容のスナップショットにする。"""
     req: dict[str, Any] = {
@@ -61,6 +68,12 @@ def build_request(
         req["include"] = ["web_search_call.action.sources"]
     if max_output_tokens:
         req["max_output_tokens"] = max_output_tokens
+    # モードの API パラメータは対応モデルにだけ付ける（非対応モデルは指示文のみ適用）
+    if supports_reasoning_params(model):
+        if verbosity:
+            req["text"] = {"verbosity": verbosity}
+        if reasoning_effort:
+            req["reasoning"] = {"effort": reasoning_effort}
     return req
 
 

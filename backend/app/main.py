@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.routers.api import router
 from app.services.chat import ChatService, mark_interrupted_runs
 from app.services.pricing import PRICES
+from app.services.prompts import PromptError, load_base, load_modes
 from app.services.tracing import Tracer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -26,6 +27,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.exception("failed to mark interrupted runs")
     log.info("model=%s langfuse=%s", settings.openai_model, "on" if tracer.enabled else "off")
+    try:
+        load_base()
+        log.info("modes=%s", [m.id for m in load_modes()])
+    except PromptError:
+        log.exception("invalid prompts: messages will fail with config_error until fixed")
     unpriced = [m for m in settings.available_models if m not in PRICES]
     if unpriced:
         log.warning("no price defined for %s: estimated cost and cost limits will not count them", unpriced)

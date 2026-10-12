@@ -44,6 +44,8 @@ export type Run = {
   searched_domain: string | null
   search_info: SearchInfo | null
   model: string
+  /** 回答スタイルのモード ID（prompts/modes/<id>.md） */
+  mode: string
   prompt_version: string
   context_message_count: number
   created_at: string
@@ -145,6 +147,27 @@ export type UsageSummary = {
   unknown_cost_run_count: number
 }
 
+export type Mode = {
+  id: string
+  label: string
+  description: string
+  verbosity: string | null
+  reasoning_effort: string | null
+}
+
+export type ModeStat = {
+  mode: string
+  model: string
+  web_search_enabled: boolean
+  run_count: number
+  avg_input_tokens: number | null
+  avg_output_tokens: number | null
+  avg_reasoning_tokens: number | null
+  avg_answer_chars: number | null
+  avg_cost_usd: number | null
+  avg_openai_duration_ms: number | null
+}
+
 export type LangfuseStatus = {
   trace_id: string | null
   status: string | null
@@ -190,6 +213,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getUsage: () => request<UsageSummary>('/api/v1/usage'),
+  listModes: () => request<{ modes: Mode[]; default: string }>('/api/v1/modes'),
+  getModeStats: () => request<ModeStat[]>('/api/v1/stats/modes'),
   listModels: () => request<{ models: string[]; default: string }>('/api/v1/models'),
   listConversations: (offset = 0, limit = 30) =>
     request<{ items: ConversationSummary[]; total: number; limit: number; offset: number }>(
@@ -201,14 +226,20 @@ export const api = {
   hideConversation: (id: string) => request<void>(`/api/v1/conversations/${id}`, { method: 'DELETE' }),
   sendMessage: (
     id: string,
-    body: { prompt: string; web_search_enabled: boolean; search_url: string | null; model: string | null },
+    body: {
+      prompt: string
+      web_search_enabled: boolean
+      search_url: string | null
+      model: string | null
+      mode: string | null
+    },
   ) =>
     request<Run>(`/api/v1/conversations/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  retryTurn: (turnId: string, model: string | null) =>
-    request<Run>(`/api/v1/turns/${turnId}/retry`, { method: 'POST', body: JSON.stringify({ model }) }),
+  retryTurn: (turnId: string, model: string | null, mode: string | null) =>
+    request<Run>(`/api/v1/turns/${turnId}/retry`, { method: 'POST', body: JSON.stringify({ model, mode }) }),
   getRun: (id: string) => request<RunDetail>(`/api/v1/runs/${id}`),
   putClientMetrics: (id: string, ms: number) =>
     request<void>(`/api/v1/runs/${id}/client-metrics`, {

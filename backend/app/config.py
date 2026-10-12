@@ -18,11 +18,7 @@ class Settings(BaseSettings):
     openai_max_retries: int = 0
     # 推論トークンを含む出力上限
     max_output_tokens: int | None = 8_000
-    prompt_version: str = "v1"
-    system_prompt: str = (
-        "あなたは日本語で回答するアシスタントです。"
-        "Web検索結果を使う場合は出典を明示し、取得できなかった情報は推測で補わずその旨を述べてください。"
-    )
+    # システム指示は backend/prompts/（base.md と modes/*.md）で管理する
 
     max_prompt_chars: int = 20_000
     # 文脈上限（文字数ベースの簡易判定）。超過時は送信せずエラーとして通知する
