@@ -114,7 +114,9 @@ class ChatService:
         web_search_enabled: bool,
         search_url: str | None,
         t0: float,
+        model: str | None = None,
     ):
+        model = self._model(model)
         searched_domain = self._domain(search_url) if web_search_enabled and search_url else None
         if len(prompt) > self.settings.max_prompt_chars:
             raise ChatError(
@@ -136,9 +138,9 @@ class ChatService:
             )
             turn.user_message_id = user_msg.id
             run = self._new_run(
-                conv, turn, prompt, web_search_enabled, search_url, searched_domain, context_ids
+                conv, turn, prompt, model, web_search_enabled, search_url, searched_domain, context_ids
             )
-            request = self._build_request(context, prompt, web_search_enabled, searched_domain)
+            request = self._build_request(model, context, prompt, web_search_enabled, searched_domain)
             run.request_snapshot = request
 
             if conv.title == DEFAULT_TITLE and not conv.turns:
@@ -148,7 +150,9 @@ class ChatService:
             await self._commit_initial(session, db, [turn, user_msg, run])
             return await self._execute(session, Prepared(run, conv, turn, context, request, db), t0)
 
-    async def retry_turn(self, turn_id: uuid.UUID, t0: float):
+    async def retry_turn(self, turn_id: uuid.UUID, t0: float, model: str | None = None):
+        if model is not None:
+            model = self._model(model)
         async with single_run(), SessionLocal() as session:
             db = DbTimer()
             async with db.measure():
@@ -162,6 +166,7 @@ class ChatService:
                 raise ChatError(409, "no_previous_run", "再実行元の実行がありません")
 
             base = turn.runs[-1]
+            model = model or base.model
             prompt = turn.user_message.content
             context, context_ids = build_context([t for t in conv.turns if t.seq < turn.seq])
             self._check_context(context, prompt)
@@ -170,13 +175,16 @@ class ChatService:
                 conv,
                 turn,
                 prompt,
+                model,
                 base.web_search_enabled,
                 base.search_url,
                 base.searched_domain,
                 context_ids,
             )
             run.retry_of_run_id = base.id
-            request = self._build_request(context, prompt, base.web_search_enabled, base.searched_domain)
+            request = self._build_request(
+                model, context, prompt, base.web_search_enabled, base.searched_domain
+            )
             run.request_snapshot = request
             conv.updated_at = utcnow()
 
@@ -184,6 +192,13 @@ class ChatService:
             return await self._execute(session, Prepared(run, conv, turn, context, request, db), t0)
 
     # ---- 内部処理 -------------------------------------------------------------
+
+    def _model(self, model: str | None) -> str:
+        if model is None:
+            return self.settings.openai_model
+        if model not in self.settings.available_models:
+            raise ChatError(422, "invalid_model", f"選択できないモデルです: {model}")
+        return model
 
     def _domain(self, search_url: str) -> str:
         try:
@@ -204,7 +219,7 @@ class ChatService:
     async def _load_conversation(self, session: AsyncSession, conversation_id: uuid.UUID) -> Conversation:
         conv = await session.scalar(
             select(Conversation)
-            .where(Conversation.id == conversation_id)
+            .where(Conversation.id == conversation_id, Conversation.hidden_at.is_(None))
             .options(
                 selectinload(Conversation.turns).selectinload(Turn.user_message),
                 selectinload(Conversation.turns).selectinload(Turn.adopted_message),
@@ -215,7 +230,7 @@ class ChatService:
         return conv
 
     def _new_run(
-        self, conv, turn, prompt, web_search_enabled, search_url, searched_domain, context_ids
+        self, conv, turn, prompt, model, web_search_enabled, search_url, searched_domain, context_ids
     ) -> Run:
         now = utcnow()
         run = Run(
@@ -227,7 +242,7 @@ class ChatService:
             web_search_enabled=web_search_enabled,
             search_url=search_url if web_search_enabled else None,
             searched_domain=searched_domain,
-            model=self.settings.openai_model,
+            model=model,
             prompt_version=self.settings.prompt_version,
             settings={
                 "timeout_seconds": self.settings.openai_timeout_seconds,
@@ -243,9 +258,9 @@ class ChatService:
             run.langfuse_status = LangfuseStatus.DISABLED
         return run
 
-    def _build_request(self, context, prompt, web_search_enabled, searched_domain) -> dict:
+    def _build_request(self, model, context, prompt, web_search_enabled, searched_domain) -> dict:
         return openai_io.build_request(
-            model=self.settings.openai_model,
+            model=model,
             instructions=self.settings.system_prompt,
             context=context,
             prompt=prompt,

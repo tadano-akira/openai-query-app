@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-5.5"
+    # 画面で選択できるモデル（カンマ区切り）。openai_model は常に含める
+    openai_models: str = "gpt-5.5,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-4.1,gpt-4.1-mini"
     openai_timeout_seconds: float = 120.0
     # 自動再試行は既定で行わない（重複課金を避ける）。対象は 429 / 5xx / 接続エラーのみ
     openai_max_retries: int = 0
@@ -29,6 +31,11 @@ class Settings(BaseSettings):
     langfuse_base_url: str = "http://host.docker.internal:3000"
     langfuse_public_url: str = "http://localhost:3000"
     langfuse_project_id: str = ""
+
+    @property
+    def available_models(self) -> list[str]:
+        models = [m.strip() for m in self.openai_models.split(",") if m.strip()]
+        return [self.openai_model, *(m for m in models if m != self.openai_model)]
 
     @property
     def langfuse_enabled(self) -> bool:

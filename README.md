@@ -67,7 +67,8 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 | 変数 | 既定 | 内容 |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | なし | 必須 |
-| `OPENAI_MODEL` | `gpt-5.5` | 使用モデル |
+| `OPENAI_MODEL` | `gpt-5.5` | 既定モデル |
+| `OPENAI_MODELS` | `gpt-5.5,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-4.1,gpt-4.1-mini` | 画面で選択できるモデル（カンマ区切り） |
 | `OPENAI_TIMEOUT_SECONDS` | `120` | API タイムアウト |
 | `OPENAI_MAX_RETRIES` | `0` | 自動再試行回数（429 / 5xx / 接続エラーのみ対象） |
 | `MAX_OUTPUT_TOKENS` | なし | 出力上限 |

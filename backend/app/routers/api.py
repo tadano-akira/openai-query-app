@@ -1,11 +1,12 @@
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.db import get_session
 from app.models import ApiCall, Conversation, Message, Run, Turn
 from app.schemas import (
@@ -16,6 +17,8 @@ from app.schemas import (
     ConversationSummary,
     MessageCreate,
     MessageOut,
+    ModelList,
+    RetryCreate,
     RunDetailOut,
     RunOut,
     TurnOut,
@@ -42,6 +45,32 @@ async def health(session: AsyncSession = Depends(get_session)):
     except Exception as e:
         raise HTTPException(503, detail={"code": "db_error", "message": "DB に接続できません"}) from e
     return {"status": "ok"}
+
+
+NOT_FOUND = {"code": "not_found", "message": "会話が見つかりません"}
+
+
+async def _models_by_conversation(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
+    """会話ごとに実行で使ったモデルを初回使用順で返す。"""
+    if not ids:
+        return {}
+    first_used = func.min(Run.created_at)
+    rows = await session.execute(
+        select(Run.conversation_id, Run.model)
+        .where(Run.conversation_id.in_(ids))
+        .group_by(Run.conversation_id, Run.model)
+        .order_by(Run.conversation_id, first_used)
+    )
+    result: dict[uuid.UUID, list[str]] = {}
+    for cid, model in rows:
+        result.setdefault(cid, []).append(model)
+    return result
+
+
+@router.get("/api/v1/models", response_model=ModelList)
+async def list_models():
+    settings = get_settings()
+    return ModelList(models=settings.available_models, default=settings.openai_model)
 
 
 @router.post("/api/v1/conversations", response_model=ConversationSummary, status_code=201)
@@ -83,11 +112,16 @@ async def list_conversations(
         select(Conversation, msg_count.c.n, usage.c.tokens, usage.c.unknown)
         .outerjoin(msg_count, msg_count.c.conversation_id == Conversation.id)
         .outerjoin(usage, usage.c.conversation_id == Conversation.id)
+        .where(Conversation.hidden_at.is_(None))
         .order_by(Conversation.updated_at.desc())
         .limit(limit)
         .offset(offset)
     )
-    total = await session.scalar(select(func.count()).select_from(Conversation))
+    total = await session.scalar(
+        select(func.count()).select_from(Conversation).where(Conversation.hidden_at.is_(None))
+    )
+    rows = rows.all()
+    models = await _models_by_conversation(session, [c.id for c, *_ in rows])
     items = [
         ConversationSummary(
             id=c.id,
@@ -97,6 +131,7 @@ async def list_conversations(
             message_count=n or 0,
             total_tokens=int(tokens or 0),
             unknown_usage_call_count=unknown or 0,
+            models=models.get(c.id, []),
         )
         for c, n, tokens, unknown in rows
     ]
@@ -109,14 +144,14 @@ async def get_conversation(
 ):
     conv = await session.scalar(
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(Conversation.id == conversation_id, Conversation.hidden_at.is_(None))
         .options(
             selectinload(Conversation.turns).selectinload(Turn.user_message),
             selectinload(Conversation.turns).selectinload(Turn.runs).selectinload(Run.api_calls),
         )
     )
     if conv is None:
-        raise HTTPException(404, detail={"code": "not_found", "message": "会話が見つかりません"})
+        raise HTTPException(404, detail=NOT_FOUND)
 
     msg_by_run = dict(
         (
@@ -143,15 +178,30 @@ async def get_conversation(
         for t in conv.turns
     ]
     runs = [r for t in conv.turns for r in t.runs]
+    models = list(dict.fromkeys(r.model for r in sorted(runs, key=lambda r: r.created_at)))
     calls = [c for r in runs for c in r.api_calls]
     return ConversationDetail(
         id=conv.id,
         title=conv.title,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
+        models=models,
         turns=turns,
         stats=conversation_stats(runs, calls),
     )
+
+
+@router.delete("/api/v1/conversations/{conversation_id}", status_code=204)
+async def hide_conversation(conversation_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """会話を一覧から非表示にする。データは削除しない。"""
+    result = await session.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.hidden_at.is_(None))
+        .values(hidden_at=func.now())
+    )
+    await session.commit()
+    if result.rowcount == 0:
+        raise HTTPException(404, detail=NOT_FOUND)
 
 
 def _chat_error(e: ChatError) -> HTTPException:
@@ -165,17 +215,21 @@ async def send_message(
     t0 = time.perf_counter()
     try:
         return await chat.send_message(
-            conversation_id, body.prompt, body.web_search_enabled, body.search_url, t0
+            conversation_id, body.prompt, body.web_search_enabled, body.search_url, t0, model=body.model
         )
     except ChatError as e:
         raise _chat_error(e) from e
 
 
 @router.post("/api/v1/turns/{turn_id}/retry", response_model=RunOut)
-async def retry_turn(turn_id: uuid.UUID, chat: ChatService = Depends(chat_service)):
+async def retry_turn(
+    turn_id: uuid.UUID,
+    body: RetryCreate | None = Body(None),
+    chat: ChatService = Depends(chat_service),
+):
     t0 = time.perf_counter()
     try:
-        return await chat.retry_turn(turn_id, t0)
+        return await chat.retry_turn(turn_id, t0, model=body.model if body else None)
     except ChatError as e:
         raise _chat_error(e) from e
 

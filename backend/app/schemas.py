@@ -9,6 +9,8 @@ class MessageCreate(BaseModel):
     prompt: str = Field(min_length=1)
     web_search_enabled: bool = True
     search_url: str | None = None
+    # 未指定時は既定モデル。選択可能なモデルかはサービス側で検証する
+    model: str | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -27,6 +29,16 @@ class MessageCreate(BaseModel):
         if self.search_url and not self.web_search_enabled:
             raise ValueError("Web検索OFFのときは検索先URLを指定できません")
         return self
+
+
+class RetryCreate(BaseModel):
+    # 未指定時は再実行元と同じモデル
+    model: str | None = None
+
+
+class ModelList(BaseModel):
+    models: list[str]
+    default: str
 
 
 class ClientMetrics(BaseModel):
@@ -157,6 +169,8 @@ class ConversationSummary(BaseModel):
     message_count: int
     total_tokens: int
     unknown_usage_call_count: int
+    # この会話の実行で使ったモデル（初回使用順）
+    models: list[str] = []
 
 
 class ConversationList(BaseModel):
@@ -171,5 +185,6 @@ class ConversationDetail(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    models: list[str]
     turns: list[TurnOut]
     stats: ConversationStats

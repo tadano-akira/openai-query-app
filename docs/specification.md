@@ -1,8 +1,8 @@
 # OpenAI API 技術検証Webアプリ 仕様書
 
-- バージョン：0.3（構成・基本設計案）
+- バージョン：0.4（構成・基本設計案）
 - 作成日：2026-10-12
-- 更新日：2026-10-12（ローカル実行方式をDocker Desktopのみに変更、初期実装に合わせて更新）
+- 更新日：2026-10-12（モデル切替・会話の削除（非表示）を追加）
 - ステータス：初期実装済み。詳細設計の未確定事項あり。
 - プロジェクト名：openai-query-app
 
@@ -150,6 +150,7 @@ Langfuse v4はevents_onlyモードで動作し、`/api/public/traces` は利用�
 | プロンプト | 必須 | 複数行テキスト。空白のみは不可 |
 | Web検索 | 必須設定 | ON／OFF。初期値はON |
 | 検索先URL | 任意 | Web検索ONのときに入力可能。初期版は1件 |
+| モデル | 任意 | `OPENAI_MODELS` の候補から選択。未指定時は `OPENAI_MODEL` |
 
 ### 5.2 動作の組合せ
 
@@ -209,6 +210,9 @@ Web検索ONでは `tool_choice: "required"` で検索の実行を求める。実
 
 - 左側に会話一覧と「新規チャット」、中央に時系列のメッセージ、下部に入力欄を配置する。
 - 会話一覧から過去の会話を選択し、続きの質問を送信できる。
+- 入力欄でモデルを選択する。会話を開くと、その会話で最後に使ったモデルを選択状態にする。再実行も選択中のモデルで行う。
+- 会話一覧とヘッダーに、その会話で使ったモデルを表示する。各回答の下には実行したモデルを表示する。
+- 会話一覧から会話を削除できる。削除は一覧からの非表示であり、DBのデータは残す。
 - プロンプト入力、Web検索切替、任意URL入力、送信ボタン。
 - 各回答の下に応答時間、入力／出力トークンの概要を表示する。
 - 「計測詳細」で処理時間の内訳、使用量、文脈情報、エラー、Langfuseリンクを確認する。
@@ -301,7 +305,7 @@ Web検索ONでは `tool_choice: "required"` で検索の実行を求める。実
 
 | エンティティ | 主な内容 |
 | --- | --- |
-| conversations | 会話ID、タイトル、作成・更新日時 |
+| conversations | 会話ID、タイトル、作成・更新日時、非表示日時（hidden_at） |
 | turns | ターンID、会話ID、順序、入力メッセージ、採用する成功回答 |
 | messages | メッセージID、会話ID、ターンID、role、本文、引用、生成元実行ID |
 | runs | 実行ID、会話ID、ターンID、再実行元ID、状態、条件、文脈、計測値 |
@@ -332,15 +336,19 @@ turns→messages、messages→runs の外部キーは循環参照になるため
 
 | メソッド | パス | 用途 |
 | --- | --- | --- |
+| GET | /api/v1/models | 選択可能なモデルと既定モデル |
 | POST | /api/v1/conversations | 新規会話作成 |
-| GET | /api/v1/conversations | 会話一覧と集計 |
-| GET | /api/v1/conversations/{id} | 会話詳細、メッセージ、計測概要 |
+| GET | /api/v1/conversations | 会話一覧と集計、使用モデル |
+| GET | /api/v1/conversations/{id} | 会話詳細、メッセージ、計測概要、使用モデル |
+| DELETE | /api/v1/conversations/{id} | 会話の非表示（データは削除しない） |
 | POST | /api/v1/conversations/{id}/messages | メッセージ送信、回答生成、保存 |
-| POST | /api/v1/turns/{id}/retry | 直近ターンの再実行 |
+| POST | /api/v1/turns/{id}/retry | 直近ターンの再実行（`model` 指定可、未指定時は再実行元と同じ） |
 | GET | /api/v1/runs/{id} | 実行詳細とAPI呼び出し別の計測値 |
 | PATCH | /api/v1/runs/{id}/client-metrics | 画面待ち時間の追記 |
 | GET | /api/v1/runs/{id}/langfuse | トレースの送信状態とLangfuseへの反映有無 |
 | GET | /api/health | アプリ稼働確認 |
+
+非表示にした会話は、一覧・詳細・送信・再実行のいずれでも404とする。候補外のモデルを指定した場合は422（`invalid_model`）とする。
 
 会話IDをパスで指定し、バックエンドでその会話の文脈を読み込む。再実行は新しい実行を作成し、ターンと再実行元に関連付ける。
 
@@ -352,7 +360,8 @@ turns→messages、messages→runs の外部キーは循環参照になるため
 {
   "prompt": "トヨタ自動車に関する最近のニュースを要約してください",
   "web_search_enabled": true,
-  "search_url": "https://finance.yahoo.co.jp/"
+  "search_url": "https://finance.yahoo.co.jp/",
+  "model": "gpt-5.5"
 }
 ```
 
@@ -427,7 +436,7 @@ RAM 16GBはWindows、ブラウザ、VS Code、Docker Desktop、全コンテナ�
 ## 15. 未確定事項
 
 1. ~~正式なプロジェクト名とリポジトリ名~~ → openai-query-app（v0.3で確定）。
-2. OpenAIの使用モデルの最終決定、モデル切替UIの要否。初期値はgpt-5.5。
+2. ~~OpenAIの使用モデルの最終決定、モデル切替UIの要否~~ → 切替UIを実装（v0.4）。既定はgpt-5.5、候補は `OPENAI_MODELS` で設定。
 3. ~~各依存ライブラリ、Langfuse、コンテナのバージョン~~ → §3.1で固定（v0.3）。
 4. 入力長・出力長・タイムアウト・利用回数の上限。初期値は§12の設定項目で仮置き。
 5. 再試行方針とAPIエラーの詳細スキーマ。初期版は自動再試行なし。
@@ -457,4 +466,5 @@ RAM 16GBはWindows、ブラウザ、VS Code、Docker Desktop、全コンテナ�
 | --- | --- | --- |
 | 0.1 | 2026-10-12 | ローカル技術検証用の構成・基本設計を作成 |
 | 0.2 | 2026-10-12 | ChatGPTのようなUIからOpenAI APIを利用する目的を明確化。複数ターン会話、会話／各応答の観測、文脈保存、データ・API設計を更新 |
+| 0.4 | 2026-10-12 | 画面でのモデル切替と会話ごとの使用モデル表示、会話の削除（非表示、データは保持）を追加。モデル候補にgpt-5.6系（sol／terra／luna）を含める |
 | 0.3 | 2026-10-12 | WSL Ubuntuを使わずDocker Desktopのみで実行する方式に変更。プロジェクト名・採用バージョン・Web検索既定値・画面待ち時間追記APIを確定。Langfuse v4のAPI差異、エラー区分、HTTP応答方針を追記 |

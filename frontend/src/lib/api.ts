@@ -114,6 +114,7 @@ export type ConversationSummary = {
   message_count: number
   total_tokens: number
   unknown_usage_call_count: number
+  models: string[]
 }
 
 export type ConversationDetail = {
@@ -121,6 +122,7 @@ export type ConversationDetail = {
   title: string
   created_at: string
   updated_at: string
+  models: string[]
   turns: Turn[]
   stats: ConversationStats
 }
@@ -169,6 +171,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  listModels: () => request<{ models: string[]; default: string }>('/api/v1/models'),
   listConversations: (offset = 0, limit = 30) =>
     request<{ items: ConversationSummary[]; total: number; limit: number; offset: number }>(
       `/api/v1/conversations?limit=${limit}&offset=${offset}`,
@@ -176,15 +179,17 @@ export const api = {
   createConversation: () =>
     request<ConversationSummary>('/api/v1/conversations', { method: 'POST', body: '{}' }),
   getConversation: (id: string) => request<ConversationDetail>(`/api/v1/conversations/${id}`),
+  hideConversation: (id: string) => request<void>(`/api/v1/conversations/${id}`, { method: 'DELETE' }),
   sendMessage: (
     id: string,
-    body: { prompt: string; web_search_enabled: boolean; search_url: string | null },
+    body: { prompt: string; web_search_enabled: boolean; search_url: string | null; model: string | null },
   ) =>
     request<Run>(`/api/v1/conversations/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  retryTurn: (turnId: string) => request<Run>(`/api/v1/turns/${turnId}/retry`, { method: 'POST' }),
+  retryTurn: (turnId: string, model: string | null) =>
+    request<Run>(`/api/v1/turns/${turnId}/retry`, { method: 'POST', body: JSON.stringify({ model }) }),
   getRun: (id: string) => request<RunDetail>(`/api/v1/runs/${id}`),
   putClientMetrics: (id: string, ms: number) =>
     request<void>(`/api/v1/runs/${id}/client-metrics`, {

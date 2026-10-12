@@ -8,7 +8,8 @@ import { RunDetailSheet } from '@/components/RunDetailSheet'
 import { StatsBar } from '@/components/StatsBar'
 import { TurnView, UserBubble } from '@/components/TurnView'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { ApiError, api, type Run } from '@/lib/api'
+import { Badge } from '@/components/ui/badge'
+import { ApiError, api, type Run, type Turn } from '@/lib/api'
 import { errorLabel, formatMs } from '@/lib/format'
 
 function initialConversationId(): string | null {
@@ -18,6 +19,22 @@ function initialConversationId(): string | null {
 /** 描画が画面に反映されるまで待つ（2回の rAF でペイント後を近似） */
 function nextPaint(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
+
+/** 会話で最後に実行したモデル */
+function lastModel(turns: Turn[]): string | null {
+  const runs = turns.flatMap((t) => t.runs)
+  return runs.length ? runs.reduce((a, b) => (a.created_at > b.created_at ? a : b)).model : null
+}
+
+/**
+ * 送信中は自分の実行が running で取得されうるため（新規会話の選択直後の取得など）、
+ * 生成中表示と重ならないよう running の実行を除き、実行が残らないターンは隠す
+ */
+function hideRunning(turns: Turn[]): Turn[] {
+  return turns
+    .map((t) => ({ ...t, runs: t.runs.filter((r) => r.status !== 'running') }))
+    .filter((t) => t.runs.length > 0)
 }
 
 function Elapsed({ since }: { since: number }) {
@@ -36,7 +53,11 @@ export default function App() {
   const [error, setError] = useState<{ title: string; message: string } | null>(null)
   const [creating, setCreating] = useState(false)
   const [detailRunId, setDetailRunId] = useState<string | null>(null)
+  // 画面で選んだモデル。選んだ会話にだけ優先して適用する
+  const [modelChoice, setModelChoice] = useState<{ conversationId: string; model: string } | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const models = useQuery({ queryKey: ['models'], queryFn: api.listModels, staleTime: Infinity })
 
   const conversation = useQuery({
     queryKey: ['conversation', selectedId],
@@ -107,11 +128,28 @@ export default function App() {
     return true
   }
 
-  const send = (v: ComposerValue) => execute(v.prompt, (id) => api.sendMessage(id, v))
-  const retry = (turnId: string) => void execute(null, () => api.retryTurn(turnId))
-
   const data = selectedId ? conversation.data : undefined
   const busy = pending !== null
+
+  // 選択モデル: この会話で選んだもの > 会話の最終使用モデル > 直前に選んだもの > 既定
+  const available = models.data?.models ?? []
+  const valid = (m: string | null | undefined) => (m && available.includes(m) ? m : null)
+  const model =
+    valid(modelChoice?.conversationId === (selectedId ?? '') ? modelChoice.model : null) ??
+    valid(data ? lastModel(data.turns) : null) ??
+    valid(modelChoice?.model) ??
+    models.data?.default ??
+    null
+  const setModel = (m: string) => setModelChoice({ conversationId: selectedId ?? '', model: m })
+
+  const send = (v: ComposerValue) => execute(v.prompt, (id) => api.sendMessage(id, { ...v, model }))
+  const retry = (turnId: string) => void execute(null, () => api.retryTurn(turnId, model))
+
+  function onHidden(id: string) {
+    if (id === selectedId) select(null)
+  }
+
+  const turns = data ? (busy ? hideRunning(data.turns) : data.turns) : []
 
   return (
     <div className="flex h-dvh">
@@ -119,12 +157,23 @@ export default function App() {
         selectedId={selectedId}
         onSelect={select}
         onNew={() => select(null)}
+        onHidden={onHidden}
         creating={creating || busy}
       />
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="border-b">
-          <div className="flex items-center justify-between px-4 py-2">
+          <div className="flex items-center justify-between gap-3 px-4 py-2">
             <h1 className="truncate text-sm font-semibold">{data?.title ?? '新規チャット'}</h1>
+            {data && data.models.length > 0 && (
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                <span className="text-muted-foreground text-xs">使用モデル</span>
+                {data.models.map((m) => (
+                  <Badge key={m} variant="outline" className="font-mono">
+                    {m}
+                  </Badge>
+                ))}
+              </div>
+            )}
           </div>
           {data && <StatsBar stats={data.stats} />}
         </header>
@@ -142,7 +191,7 @@ export default function App() {
                 <AlertDescription>{String(conversation.error)}</AlertDescription>
               </Alert>
             )}
-            {data?.turns.map((t) => (
+            {turns.map((t) => (
               <TurnView key={t.id} turn={t} busy={busy} onRetry={retry} onShowDetail={setDetailRunId} />
             ))}
             {pending && (
@@ -165,7 +214,13 @@ export default function App() {
               <AlertDescription>{error.message}</AlertDescription>
             </Alert>
           )}
-          <Composer disabled={busy} onSubmit={send} />
+          <Composer
+            disabled={busy}
+            onSubmit={send}
+            models={models.data?.models ?? []}
+            model={model}
+            onModelChange={setModel}
+          />
         </div>
       </main>
       <RunDetailSheet runId={detailRunId} onOpenChange={(o) => !o && setDetailRunId(null)} />

@@ -9,6 +9,35 @@ import { Textarea } from '@/components/ui/textarea'
 
 export type ComposerValue = { prompt: string; web_search_enabled: boolean; search_url: string | null }
 
+function ModelSelect({
+  models,
+  value,
+  onChange,
+  disabled,
+}: {
+  models: string[]
+  value: string | null
+  onChange: (model: string) => void
+  disabled: boolean
+}) {
+  return (
+    <select
+      aria-label="モデル"
+      value={value ?? ''}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled || models.length === 0}
+      className="border-input bg-background focus-visible:ring-ring/50 h-8 rounded-lg border px-2 text-sm outline-none focus-visible:ring-3 disabled:opacity-50"
+    >
+      {models.length === 0 && <option value="">モデル取得中…</option>}
+      {models.map((m) => (
+        <option key={m} value={m}>
+          {m}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 /** 画面表示用の目安。正式な正規化・検証はバックエンドで行う */
 function previewDomain(url: string): string | null {
   const raw = url.trim()
@@ -23,9 +52,15 @@ function previewDomain(url: string): string | null {
 export function Composer({
   disabled,
   onSubmit,
+  models,
+  model,
+  onModelChange,
 }: {
   disabled: boolean
   onSubmit: (v: ComposerValue) => Promise<boolean>
+  models: string[]
+  model: string | null
+  onModelChange: (model: string) => void
 }) {
   const [prompt, setPrompt] = useState('')
   const [webSearch, setWebSearch] = useState(true)
@@ -60,6 +95,7 @@ export function Composer({
         disabled={disabled}
       />
       <div className="flex flex-wrap items-center gap-3">
+        <ModelSelect models={models} value={model} onChange={onModelChange} disabled={disabled} />
         <div className="flex items-center gap-2">
           <Switch id="web-search" checked={webSearch} onCheckedChange={setWebSearch} />
           <Label htmlFor="web-search" className="text-sm">

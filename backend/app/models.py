@@ -27,6 +27,8 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    # 画面上の削除は非表示にするだけ（データは残す）
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     turns: Mapped[list["Turn"]] = relationship(back_populates="conversation", order_by="Turn.seq")
 
