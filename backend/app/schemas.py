@@ -68,6 +68,16 @@ class ModeStat(BaseModel):
     avg_openai_duration_ms: float | None
 
 
+class CharacterOut(BaseModel):
+    """回答に表示するキャラクター（見た目のみ）"""
+
+    name: str
+    # 各回答の横の小さな丸アイコン
+    avatar_url: str | None
+    # チャット欄の右に出す大きな立ち絵
+    portrait_url: str | None
+
+
 class ModelList(BaseModel):
     models: list[str]
     default: str

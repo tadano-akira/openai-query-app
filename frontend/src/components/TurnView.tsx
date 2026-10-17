@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, Gauge, Globe, RotateCcw } from 'lucide-react'
 import { useState } from 'react'
 
+import { AssistantFrame } from '@/components/AssistantFrame'
 import { Markdown } from '@/components/Markdown'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -108,60 +109,60 @@ export function TurnView({
     <div className="space-y-3">
       {turn.user_message && <UserBubble text={turn.user_message.content} />}
       {run && (
-        <div className="space-y-2">
-          <RunBody run={run} />
-          <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <SearchBadge run={run} />
-            <span>応答 {formatMs(run.timings.client_duration_ms ?? run.timings.backend_duration_ms)}</span>
-            <span>API {formatMs(run.timings.openai_duration_ms)}</span>
-            <span>
-              入力 {formatTokens(run.usage.input_tokens)} / 出力 {formatTokens(run.usage.output_tokens)}
-            </span>
-            <span title="モデル別単価による推定料金">推定 {formatUsd(run.estimated_cost_usd)}</span>
-            <span>{run.model}</span>
-            <span title="回答スタイルのモード">{modeLabels[run.mode] ?? run.mode}</span>
-            <span>{formatDate(run.generated_at ?? run.created_at)}</span>
-            <Button variant="ghost" size="xs" onClick={() => onShowDetail(run.request_id)}>
-              <Gauge /> 計測詳細
-            </Button>
-            {turn.is_latest && (
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={busy}
-                onClick={() => {
-                  setIndex(null)
-                  onRetry(turn.id)
-                }}
-              >
-                <RotateCcw /> 再実行
-              </Button>
-            )}
-            {runs.length > 1 && (
-              <span className="flex items-center">
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={current === 0}
-                  onClick={() => setIndex(current - 1)}
-                  aria-label="前の試行"
-                >
-                  <ChevronLeft />
-                </Button>
-                試行 {current + 1}/{runs.length}
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={current === runs.length - 1}
-                  onClick={() => setIndex(current + 1)}
-                  aria-label="次の試行"
-                >
-                  <ChevronRight />
-                </Button>
+        <AssistantFrame>
+            <RunBody run={run} />
+            <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <SearchBadge run={run} />
+              <span>応答 {formatMs(run.timings.client_duration_ms ?? run.timings.backend_duration_ms)}</span>
+              <span>API {formatMs(run.timings.openai_duration_ms)}</span>
+              <span>
+                入力 {formatTokens(run.usage.input_tokens)} / 出力 {formatTokens(run.usage.output_tokens)}
               </span>
-            )}
-          </div>
-        </div>
+              <span title="モデル別単価による推定料金">推定 {formatUsd(run.estimated_cost_usd)}</span>
+              <span>{run.model}</span>
+              <span title="回答スタイルのモード">{modeLabels[run.mode] ?? run.mode}</span>
+              <span>{formatDate(run.generated_at ?? run.created_at)}</span>
+              <Button variant="ghost" size="xs" onClick={() => onShowDetail(run.request_id)}>
+                <Gauge /> 計測詳細
+              </Button>
+              {turn.is_latest && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => {
+                    setIndex(null)
+                    onRetry(turn.id)
+                  }}
+                >
+                  <RotateCcw /> 再実行
+                </Button>
+              )}
+              {runs.length > 1 && (
+                <span className="flex items-center">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    disabled={current === 0}
+                    onClick={() => setIndex(current - 1)}
+                    aria-label="前の試行"
+                  >
+                    <ChevronLeft />
+                  </Button>
+                  試行 {current + 1}/{runs.length}
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    disabled={current === runs.length - 1}
+                    onClick={() => setIndex(current + 1)}
+                    aria-label="次の試行"
+                  >
+                    <ChevronRight />
+                  </Button>
+                </span>
+              )}
+            </div>
+        </AssistantFrame>
       )}
     </div>
   )

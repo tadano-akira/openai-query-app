@@ -213,6 +213,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getUsage: () => request<UsageSummary>('/api/v1/usage'),
+  getCharacter: () => request<{ name: string; avatar_url: string | null; portrait_url: string | null }>('/api/v1/character'),
   listModes: () => request<{ modes: Mode[]; default: string }>('/api/v1/modes'),
   getModeStats: () => request<ModeStat[]>('/api/v1/stats/modes'),
   listModels: () => request<{ models: string[]; default: string }>('/api/v1/models'),

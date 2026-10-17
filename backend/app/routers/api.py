@@ -2,6 +2,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,6 +11,7 @@ from app.config import get_settings
 from app.db import get_session
 from app.models import ApiCall, Conversation, Message, Run, Turn
 from app.schemas import (
+    CharacterOut,
     ClientMetrics,
     ConversationCreate,
     ConversationDetail,
@@ -27,6 +29,7 @@ from app.schemas import (
     TurnOut,
     UsageSummary,
 )
+from app.services.character import IMAGE_TYPES, ImageKind, load_character
 from app.services.chat import DEFAULT_TITLE, ChatError, ChatService
 from app.services.prompts import DEFAULT_MODE, PromptError, load_modes
 from app.services.serializers import conversation_stats, run_to_detail, run_to_out
@@ -77,6 +80,35 @@ async def _models_by_conversation(session: AsyncSession, ids: list[uuid.UUID]) -
 async def list_models():
     settings = get_settings()
     return ModelList(models=settings.available_models, default=settings.openai_model)
+
+
+@router.get("/api/v1/character", response_model=CharacterOut)
+async def get_character():
+    c = load_character()
+
+    def url(kind: ImageKind) -> str | None:
+        img = c.image(kind)
+        return f"/api/v1/character/{kind}?v={img.version}" if img else None
+
+    return CharacterOut(name=c.name, avatar_url=url("avatar"), portrait_url=url("portrait"))
+
+
+@router.get("/api/v1/character/{kind}")
+async def get_character_image(kind: ImageKind):
+    img = load_character().image(kind)
+    if img is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "画像が設定されていません"})
+    return FileResponse(
+        img.path,
+        media_type=IMAGE_TYPES[img.path.suffix.lower()],
+        headers={
+            # URL に内容の版が付くので長くキャッシュしてよい
+            "Cache-Control": "public, max-age=86400",
+            # SVG を直接開かれてもスクリプトを実行させない
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/api/v1/modes", response_model=ModeList)
