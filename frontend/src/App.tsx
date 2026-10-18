@@ -11,7 +11,7 @@ import { TurnView, UserBubble } from '@/components/TurnView'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ApiError, api, type Run, type Turn } from '@/lib/api'
+import { ApiError, api, type Run, type SecretFinding, type Turn } from '@/lib/api'
 import { errorLabel, formatMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -97,7 +97,7 @@ export default function App() {
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<string | null>(initialConversationId)
   const [pending, setPending] = useState<{ prompt: string | null; startedAt: number } | null>(null)
-  const [error, setError] = useState<{ title: string; message: string } | null>(null)
+  const [error, setError] = useState<{ title: string; message: string; findings: SecretFinding[] } | null>(null)
   const [creating, setCreating] = useState(false)
   const [detailRunId, setDetailRunId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = usePersistentFlag('oqa.sidebarOpen')
@@ -143,8 +143,8 @@ export default function App() {
   }
 
   function showError(e: unknown) {
-    if (e instanceof ApiError) setError({ title: errorLabel(e.code), message: e.message })
-    else setError({ title: 'エラー', message: String(e) })
+    if (e instanceof ApiError) setError({ title: errorLabel(e.code), message: e.message, findings: e.findings })
+    else setError({ title: 'エラー', message: String(e), findings: [] })
   }
 
   async function createConversation(): Promise<string> {
@@ -164,10 +164,11 @@ export default function App() {
     setError(null)
     setPending({ prompt, startedAt })
     let convId = selectedId
+    let createdId: string | null = null
     let run: Run
     try {
       if (!convId) {
-        convId = await createConversation()
+        convId = createdId = await createConversation()
         setSelectedId(convId)
       }
       run = await call(convId)
@@ -175,6 +176,13 @@ export default function App() {
     } catch (e) {
       setPending(null)
       showError(e)
+      // この送信で作った会話が、サーバーに断られて空のまま残る場合は一覧から外す
+      // （機密情報の検知・利用上限など。通信エラーは実行済みの可能性があるので外さない）
+      if (createdId && e instanceof ApiError && e.status >= 400) {
+        await api.hideConversation(createdId).catch(() => undefined)
+        setSelectedId(null)
+        void queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      }
       void queryClient.invalidateQueries({ queryKey: ['usage'] })
       return false
     }
@@ -338,7 +346,18 @@ export default function App() {
               {error && (
                 <Alert variant="destructive">
                   <AlertTitle>{error.title}</AlertTitle>
-                  <AlertDescription>{error.message}</AlertDescription>
+                  <AlertDescription>
+                    <p>{error.message}</p>
+                    {error.findings.length > 0 && (
+                      <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                        {error.findings.map((f) => (
+                          <li key={`${f.start}-${f.end}`}>
+                            {f.label}: <code className="font-mono">{f.masked}</code>（{f.start + 1}文字目から）
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </AlertDescription>
                 </Alert>
               )}
               <Composer

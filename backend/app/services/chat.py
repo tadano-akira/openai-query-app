@@ -15,8 +15,8 @@ from sqlalchemy.orm import selectinload
 
 from app.config import Settings
 from app.db import SessionLocal
-from app.models import ApiCall, Conversation, Message, Run, RunStatus, Turn, utcnow
-from app.services import openai_io, pricing, prompts
+from app.models import ApiCall, Conversation, Message, Run, RunStatus, SecretDetection, Turn, utcnow
+from app.services import openai_io, pricing, prompts, secret_scan
 from app.services.serializers import run_to_out
 from app.services.tracing import LangfuseStatus, Tracer
 from app.services.usage import exceeded_reason, usage_summary
@@ -30,11 +30,13 @@ DEFAULT_TITLE = "新規チャット"
 class ChatError(Exception):
     """実行を作成する前に失敗した場合のエラー（HTTP エラーとして返す）。"""
 
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(self, status_code: int, code: str, message: str, extra: dict | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        # detail に追加して返す情報（機密情報の検知結果など）
+        self.extra = extra or {}
 
 
 # 同時実行は 1 件（FastAPI は 1 ワーカー前提）
@@ -127,6 +129,8 @@ class ChatService:
                 "prompt_too_long",
                 f"プロンプトは {self.settings.max_prompt_chars} 文字以内で入力してください",
             )
+        # 履歴への保存・OpenAI への送信より前に検査する（ブロック時は何も保存しない）
+        await self._scan_secrets(prompt, conversation_id, "message")
 
         async with single_run(), SessionLocal() as session:
             db = DbTimer()
@@ -178,6 +182,8 @@ class ChatService:
             model = model or base.model
             instr = self._instructions(mode or base.mode)
             prompt = turn.user_message.content
+            # 検知ルールの追加後に再実行する場合に備えて、再実行でも検査する
+            await self._scan_secrets(prompt, conv.id, "retry")
             context, context_ids = build_context([t for t in conv.turns if t.seq < turn.seq])
             self._check_context(context, prompt, instr.text)
 
@@ -210,6 +216,54 @@ class ChatService:
         if model not in self.settings.available_models:
             raise ChatError(422, "invalid_model", f"選択できないモデルです: {model}")
         return model
+
+    async def _scan_secrets(self, prompt: str, conversation_id: uuid.UUID, source: str) -> None:
+        """機密情報を検知したら記録して 422 でブロックする。検知した値そのものは返さない・残さない。"""
+        try:
+            findings = await secret_scan.scan(self.settings, prompt)
+        except secret_scan.ScanUnavailable as e:
+            if self.settings.secret_scan_fail_open:
+                log.warning("secret scan unavailable, sending without scan (fail-open): %s", e)
+                return
+            log.error("secret scan unavailable, blocked: %s", e)
+            raise ChatError(
+                503,
+                "secret_scan_unavailable",
+                "機密情報の検査サービス（Presidio）に接続できないため、送信を中止しました",
+            ) from e
+        if not findings:
+            return
+        summary = [
+            {"entity": f.entity, "label": f.label, "start": f.start, "end": f.end, "score": f.score}
+            for f in findings
+        ]
+        log.warning(
+            "secret detected, blocked: source=%s conversation=%s entities=%s",
+            source,
+            conversation_id,
+            [f.entity for f in findings],
+        )
+        try:
+            async with SessionLocal() as session:
+                session.add(
+                    SecretDetection(
+                        conversation_id=conversation_id,
+                        source=source,
+                        findings=summary,
+                        prompt_chars=len(prompt),
+                    )
+                )
+                await session.commit()
+        except SQLAlchemyError:
+            log.exception("failed to record secret detection")
+        labels = "、".join(dict.fromkeys(f.label for f in findings))
+        raise ChatError(
+            422,
+            "secret_detected",
+            f"機密情報の可能性がある文字列を検知したため、送信を中止しました（{labels}）。"
+            "該当部分を削除・置き換えてから送信してください",
+            extra={"findings": [{**s, "masked": f.masked} for s, f in zip(summary, findings, strict=True)]},
+        )
 
     def _instructions(self, mode: str | None) -> prompts.Instructions:
         try:

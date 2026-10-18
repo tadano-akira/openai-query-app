@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # 「1日」「1か月」の区切りに使うタイムゾーン
     usage_timezone: str = "Asia/Tokyo"
 
+    # 送信前の機密情報検知（Microsoft Presidio）。検知したら OpenAI へ送らずにブロックする
+    secret_scan_enabled: bool = True
+    presidio_url: str = "http://presidio:3000"
+    secret_scan_timeout_seconds: float = 10.0
+    # この確からしさ以上の検知をブロックする（ルールごとの値は services/secret_scan.py）
+    secret_scan_min_score: float = 0.5
+    # Presidio に接続できないとき true なら検査なしで送る。既定は安全側（送信を止める）
+    secret_scan_fail_open: bool = False
+
     # ログイン（メールアドレス＋パスワード、利用者は 1 人。アカウントは python -m app.cli で作る）
     # 最後に使ってからこの日数でログイン状態が切れる
     session_days: int = 30

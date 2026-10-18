@@ -33,6 +33,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # 起動待ちはしない（未起動の間の送信は secret_scan_unavailable で止まる）
+      presidio:
+        condition: service_started
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:?}@db:5432/app
@@ -49,6 +52,18 @@ services:
       - backend_venv:/opt/venv
     extra_hosts:
       - host.docker.internal:host-gateway
+    logging: *logging
+
+  # 送信前の機密情報検知（Microsoft Presidio Analyzer）。ホストへは公開せず backend からのみ使う
+  presidio:
+    image: mcr.microsoft.com/presidio-analyzer:2.2.362
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     logging: *logging
 
   frontend:

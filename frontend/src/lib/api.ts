@@ -175,13 +175,18 @@ export type LangfuseStatus = {
   url: string | null
 }
 
+/** 送信前に検知した機密情報（値そのものは含まず、先頭数文字の伏せ字だけ） */
+export type SecretFinding = { entity: string; label: string; start: number; end: number; masked: string }
+
 export class ApiError extends Error {
   status: number
   code: string
-  constructor(status: number, code: string, message: string) {
+  findings: SecretFinding[]
+  constructor(status: number, code: string, message: string, findings: SecretFinding[] = []) {
     super(message)
     this.status = status
     this.code = code
+    this.findings = findings
   }
 }
 
@@ -209,7 +214,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const detail = body?.detail
     if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-      throw new ApiError(res.status, detail.code ?? 'error', detail.message ?? '不明なエラー')
+      throw new ApiError(
+        res.status,
+        detail.code ?? 'error',
+        detail.message ?? '不明なエラー',
+        Array.isArray(detail.findings) ? detail.findings : [],
+      )
     }
     if (Array.isArray(detail)) {
       const msg = detail.map((d: { msg: string }) => d.msg.replace(/^Value error, /, '')).join(' / ')

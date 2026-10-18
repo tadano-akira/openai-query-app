@@ -302,7 +302,7 @@ async def hide_conversation(conversation_id: uuid.UUID, session: AsyncSession = 
 
 
 def _chat_error(e: ChatError) -> HTTPException:
-    return HTTPException(e.status_code, detail={"code": e.code, "message": e.message})
+    return HTTPException(e.status_code, detail={"code": e.code, "message": e.message, **e.extra})
 
 
 @router.post("/api/v1/conversations/{conversation_id}/messages", response_model=RunOut)

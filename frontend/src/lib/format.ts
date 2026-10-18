@@ -50,6 +50,8 @@ export const ERROR_LABELS: Record<string, string> = {
   internal_error: '内部エラー',
   busy: '処理中',
   usage_limit_exceeded: '利用上限',
+  secret_detected: '機密情報を検知したため送信を中止しました',
+  secret_scan_unavailable: '機密情報の検査ができません',
   invalid_model: '選択できないモデル',
 }
 

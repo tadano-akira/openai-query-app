@@ -61,6 +61,23 @@ class AuthSession(Base):
     user: Mapped[User] = relationship()
 
 
+class SecretDetection(Base):
+    """送信前に機密情報を検知してブロックした記録。機密情報そのもの・プロンプト本文は保存しない"""
+
+    __tablename__ = "secret_detections"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    # message（送信）/ retry（再実行）
+    source: Mapped[str] = mapped_column(String(20))
+    # [{entity, label, start, end, score}]
+    findings: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    prompt_chars: Mapped[int] = mapped_column(Integer)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 

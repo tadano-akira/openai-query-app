@@ -12,10 +12,11 @@ ChatGPT 風のチャット UI から OpenAI Responses API（Web 検索ツール�
 | バックエンド | FastAPI + SQLAlchemy 2 (async) + Alembic + OpenAI Python SDK |
 | アプリ DB | PostgreSQL 17 |
 | 観測 | Langfuse v4（セルフホスト、別 Compose プロジェクト） |
+| 機密情報検知 | Microsoft Presidio Analyzer 2.2.362（送信前の検査） |
 | 実行環境 | Windows + Docker Desktop（ソースは Windows 側、コンテナは Linux） |
 
 ```
-compose.yaml          アプリ一式（db / backend / frontend）
+compose.yaml          アプリ一式（db / backend / presidio / frontend）
 langfuse/compose.yaml Langfuse 一式（web / worker / postgres / clickhouse / redis / minio）
 backend/              FastAPI アプリ・Alembic・テスト
 frontend/             React アプリ
@@ -81,6 +82,33 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 - Windows のバインドマウントは変更通知が届かないため、uvicorn / Vite ともポーリングで変更を検知する。
 - `node_modules` と Python venv は named volume に置いている。依存を変えたら
   `docker compose restart frontend` / `docker compose up -d --build backend`。
+
+## 送信前の機密情報検知（Presidio）
+
+OpenAI へ送る前に、プロンプトに秘密鍵・アクセストークン・API キー等が含まれていないかを
+Microsoft Presidio Analyzer（`presidio` コンテナ、ホストには非公開）で検査し、検知したら送信をブロックする。
+個人情報（氏名・メールアドレス等）は検知対象外。
+
+- 検知ルールは `backend/app/services/secret_scan.py` の `PATTERNS`。Presidio 標準の PII 認識器は使わず、
+  このルールを ad_hoc_recognizers として毎回渡す（大文字小文字は区別する）。
+- 対象: 秘密鍵（SSH / TLS / PGP / PuTTY / age）、AWS・GitHub・GitLab・Stripe・Google（API キー・OAuth クライアントシークレット）・
+  Slack・Brevo・npm・Hugging Face・PyPI・DigitalOcean・SendGrid・Shopify・Telegram のキーやトークン、
+  `sk-` 形式の API キー（OpenAI・Anthropic・Langfuse 等）、JWT、パスワード付き接続文字列、
+  `password = 値` のような代入（関数呼び出し・環境変数参照・`${VAR}`・`<placeholder>` は除く）。
+- 接頭辞のないランダムなトークンは、Presidio で候補（英数字・記号が 20 文字以上続く部分）を抽出し、
+  アプリ側（`is_random_token`）で文字の散らばり（エントロピー）・文字種・英単語らしさから判定する。
+  - 英大文字・小文字・数字が混ざるものは、前後の文脈なしで検知する（20〜44 文字で 97〜100%）。
+  - 16 進数や小文字＋数字だけのものは、直前 40 文字に key / token / password / キー / トークン等があるときだけ検知する
+    （コミットハッシュ・チェックサムと区別できないため）。
+  - 単語をつないだ識別子・パス・UUID・バージョン番号・SSH 公開鍵は検知しない。
+  - base64 でエンコードしたデータなど、ランダムに見える長い文字列は検知されることがある。
+- ブロック時は画面に種類と伏せ字（先頭数文字と文字数）を表示する。入力内容は入力欄に残る。
+  会話履歴・実行記録・Langfuse には何も残さない。
+- 検知の記録は `secret_detections` テーブルに残す（種類・位置・確からしさ・文字数のみ。値そのものは保存しない）。
+  アプリログにも種類だけを WARNING で出す。
+- Presidio に接続できないときは送信を止める（`SECRET_SCAN_FAIL_OPEN=true` で検査なしの送信に切り替え）。
+- 再実行でも同じ検査をする。
+- メモリは Presidio だけで約 0.8〜1GB 使う（2026-10-18 実測、起動直後 0.8GB・検査後 0.95GB）。
 
 ## システム指示とモード
 
@@ -157,6 +185,10 @@ reasoning_effort: low          # 任意: minimal / low / medium / high
 | `DAILY_COST_LIMIT_USD` | `3.0` | 1日の推定利用額上限（0 で無制限） |
 | `MONTHLY_COST_LIMIT_USD` | `30.0` | 1か月の推定利用額上限（0 で無制限） |
 | `USAGE_TIMEZONE` | `Asia/Tokyo` | 1日・1か月の区切り |
+| `SECRET_SCAN_ENABLED` | `true` | 送信前の機密情報検知 |
+| `PRESIDIO_URL` | `http://presidio:3000` | Presidio Analyzer の URL |
+| `SECRET_SCAN_MIN_SCORE` | `0.5` | この確からしさ以上をブロック |
+| `SECRET_SCAN_FAIL_OPEN` | `false` | Presidio 停止時に検査なしで送るか |
 | `SESSION_DAYS` | `30` | 最後に使ってからログイン状態が切れるまでの日数 |
 | `COOKIE_SECURE` | `false` | `true` で Cookie を HTTPS 限定にする（HTTPS 配信時は必須） |
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCK_MINUTES` | `5` / `15` | 連続失敗回数とロック時間 |
