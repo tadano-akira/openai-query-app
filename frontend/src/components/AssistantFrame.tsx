@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 
 import { api } from '@/lib/api'
+import { CharacterVisibleContext } from '@/lib/prefs'
 
 /** 回答に表示するキャラクター（backend/character/ で設定、見た目のみ） */
 function useCharacter() {
@@ -36,6 +37,15 @@ function Avatar({ name, url }: { name: string; url: string | null }) {
 /** アシスタントの発言枠: 左にアイコン、上に名前、その下に本文 */
 export function AssistantFrame({ children }: { children: React.ReactNode }) {
   const { name, avatarUrl } = useCharacter()
+  if (!useContext(CharacterVisibleContext)) {
+    // キャラクター表示 OFF: 顔は出さず、名前は「AI」
+    return (
+      <div className="space-y-2">
+        <div className="text-sm leading-6 font-semibold">AI</div>
+        {children}
+      </div>
+    )
+  }
   return (
     <div className="flex gap-4">
       <Avatar key={avatarUrl ?? 'none'} name={name} url={avatarUrl} />
@@ -51,7 +61,8 @@ export function AssistantFrame({ children }: { children: React.ReactNode }) {
 export function CharacterPanel() {
   const { name, portraitUrl } = useCharacter()
   const [broken, setBroken] = useState<string | null>(null)
-  if (!portraitUrl || broken === portraitUrl) return null
+  const visible = useContext(CharacterVisibleContext)
+  if (!visible || !portraitUrl || broken === portraitUrl) return null
   return (
     <aside className="hidden w-72 shrink-0 flex-col items-center gap-3 overflow-y-auto border-l p-5 xl:flex">
       <img
