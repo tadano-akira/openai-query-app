@@ -259,6 +259,38 @@ export type AnswerRun = AnswerRunSummary & {
   completed_at: string | null
   langfuse_url: string | null
   estimated_cost_usd: number | null
+  usage: AnswerUsage
+}
+
+export type AnswerUsage = {
+  llm_call_count: number
+  unknown_usage_call_count: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  embedding_tokens: number
+  api_ms: number | null
+  estimated_cost_usd: number
+  unknown_cost_call_count: number
+}
+
+export type AnswerStats = {
+  run_count: number
+  succeeded_count: number
+  failed_count: number
+  status_counts: Record<string, number>
+  api_call_count: number
+  unknown_usage_call_count: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  estimated_cost_usd: number
+  unknown_cost_call_count: number
+  avg_duration_ms: number | null
+  duration_sample_count: number
+  avg_api_ms: number | null
+  api_sample_count: number
+  total_duration_ms: number
 }
 
 export type SearchRun = {
@@ -401,6 +433,7 @@ export const docsApi = {
       method: 'POST',
       body: JSON.stringify({ question, issuer_ids: issuerIds, model }),
     }),
+  answerStats: () => request<AnswerStats>('/api/v1/answer-stats'),
   answerRuns: () => request<AnswerRunSummary[]>('/api/v1/answer-runs'),
   answerRun: (id: string) => request<AnswerRun>(`/api/v1/answer-runs/${id}`),
 }

@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Loader2, MessageSquareQuote } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink, Loader2, MessageSquareQuote } from 'lucide-react'
 import { useState } from 'react'
 
 import { Link, inputClass } from '@/components/docs/common'
+import { Stat } from '@/components/StatsBar'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,11 +12,13 @@ import {
   docsApi,
   type AnswerItem,
   type AnswerRun,
+  type AnswerStats,
   type AnswerStatus,
   type CalculationView,
   type MetricPolicyInfo,
 } from '@/lib/docs'
-import { errorLabel, formatDate, formatMs, formatUsd } from '@/lib/format'
+import { errorLabel, formatDate, formatMs, formatTokens, formatUsd } from '@/lib/format'
+import { usePersistentFlag } from '@/lib/prefs'
 import { navigate } from '@/lib/router'
 import { cn } from '@/lib/utils'
 
@@ -83,7 +86,7 @@ function ItemCard({ item }: { item: AnswerItem }) {
           {item.title && ` ／ ${item.title}`} ／ PDF {item.page_number}ページ目
         </span>
         <Button size="xs" variant="outline" className="ml-auto" onClick={() => navigate(item.viewer_url)}>
-          原本で見る
+          エビデンスを確認する（原本参照）
         </Button>
       </div>
     </div>
@@ -161,6 +164,55 @@ function CalculationPanel({ c }: { c: CalculationView }) {
   )
 }
 
+/** 回答ごとの計測値（チャットの各回答の下の行と同じ形式） */
+function UsageLine({ run }: { run: AnswerRun }) {
+  const u = run.usage
+  return (
+    <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-2 text-xs">
+      <span>応答 {formatMs(run.timings.total_ms)}</span>
+      <span title="回答の LLM 呼び出しの所要時間（作り直しを含む）">API {formatMs(u.api_ms)}</span>
+      <span title={`埋め込み（検索）${u.embedding_tokens.toLocaleString()} を含む・呼び出し ${u.llm_call_count}回`}>
+        入力 {formatTokens(u.input_tokens)} / 出力 {formatTokens(u.output_tokens)}
+        {u.unknown_usage_call_count > 0 && `（不明 ${u.unknown_usage_call_count}件）`}
+      </span>
+      <span title="モデル別単価による推定料金（埋め込みを含む）">推定 {formatUsd(run.estimated_cost_usd)}</span>
+      <span>{run.model}</span>
+      <span>{formatDate(run.created_at)}</span>
+    </div>
+  )
+}
+
+const STATUS_ORDER: AnswerStatus[] = ['completed', 'needs_review', 'insufficient_evidence', 'needs_clarification', 'failed']
+
+/** 資料Q&A 全体の計測値（チャットの上部の計測値と同じ形式） */
+function AnswerStatsBar({ stats }: { stats: AnswerStats }) {
+  const tokenNote =
+    stats.unknown_usage_call_count > 0
+      ? `取得済み分の合計・不明 ${stats.unknown_usage_call_count}件`
+      : `入力 ${stats.input_tokens.toLocaleString()} / 出力 ${stats.output_tokens.toLocaleString()}`
+  return (
+    <div id="answer-stats-bar" className="grid grid-cols-2 gap-x-6 gap-y-2 border-t px-4 py-2 sm:grid-cols-3 lg:grid-cols-6">
+      <Stat label="実行回数" value={`${stats.run_count}`} note={`成功 ${stats.succeeded_count} / 失敗 ${stats.failed_count}`} />
+      <Stat label="累計トークン" value={stats.total_tokens.toLocaleString()} note={tokenNote} />
+      <Stat
+        label="推定料金"
+        value={formatUsd(stats.estimated_cost_usd)}
+        note={stats.unknown_cost_call_count > 0 ? `単価不明 ${stats.unknown_cost_call_count}件を除く` : '単価からの目安'}
+      />
+      <Stat label="平均応答時間" value={formatMs(stats.avg_duration_ms)} note={`対象 ${stats.duration_sample_count}件`} />
+      <Stat label="平均 API 所要時間" value={formatMs(stats.avg_api_ms)} note={`対象 ${stats.api_sample_count}件`} />
+      <Stat
+        label="回答の状態"
+        value={`${stats.status_counts.completed ?? 0} 回答`}
+        note={STATUS_ORDER.slice(1)
+          .filter((s) => stats.status_counts[s])
+          .map((s) => `${STATUS[s].label} ${stats.status_counts[s]}`)
+          .join(' / ')}
+      />
+    </div>
+  )
+}
+
 function AnswerView({ run }: { run: AnswerRun }) {
   const r = run.result
   const [showDetail, setShowDetail] = useState(false)
@@ -175,12 +227,9 @@ function AnswerView({ run }: { run: AnswerRun }) {
         )}
         <span className="font-medium">{run.question}</span>
       </div>
-      <div className="text-muted-foreground text-xs">
-        {formatDate(run.created_at)}・{run.model}
-        {run.timings.total_ms != null && `・所要 ${formatMs(run.timings.total_ms)}`}
-        {run.estimated_cost_usd != null && `・推定 ${formatUsd(run.estimated_cost_usd)}`}
-        {r && r.scope.length > 0 && `・対象: ${r.scope.map((s) => `${s.issuer} ${s.title}`).join('、')}`}
-      </div>
+      {r && r.scope.length > 0 && (
+        <div className="text-muted-foreground text-xs">対象: {r.scope.map((s) => `${s.issuer} ${s.title}`).join('、')}</div>
+      )}
 
       {run.status === 'failed' && (
         <Alert variant="destructive">
@@ -237,6 +286,7 @@ function AnswerView({ run }: { run: AnswerRun }) {
         </div>
       )}
 
+      <UsageLine run={run} />
       <div>
         <Button size="xs" variant="ghost" onClick={() => setShowDetail((v) => !v)}>
           {showDetail ? '処理の詳細を閉じる' : '処理の詳細'}
@@ -285,6 +335,8 @@ export function AnswerPage({ runId }: { runId: string | null }) {
   const issuers = useQuery({ queryKey: ['issuers'], queryFn: docsApi.issuers })
   const models = useQuery({ queryKey: ['models'], queryFn: api.listModels, staleTime: Infinity })
   const recent = useQuery({ queryKey: ['answer-runs'], queryFn: docsApi.answerRuns })
+  const stats = useQuery({ queryKey: ['answer-stats'], queryFn: docsApi.answerStats })
+  const [statsOpen, setStatsOpen] = usePersistentFlag('oqa.statsOpen')
   const existing = useQuery({ queryKey: ['answer-run', runId], queryFn: () => docsApi.answerRun(runId!), enabled: !!runId })
   const [question, setQuestion] = useState('')
   const [issuerIds, setIssuerIds] = useState<string[]>([])
@@ -302,6 +354,7 @@ export function AnswerPage({ runId }: { runId: string | null }) {
       const r = await docsApi.answer(question, issuerIds, model)
       qc.setQueryData(['answer-run', r.id], r)
       qc.invalidateQueries({ queryKey: ['answer-runs'] })
+      qc.invalidateQueries({ queryKey: ['answer-stats'] })
       qc.invalidateQueries({ queryKey: ['usage'] })
       navigate(`/docs/answer?run=${r.id}`)
     } catch (err) {
@@ -312,89 +365,105 @@ export function AnswerPage({ runId }: { runId: string | null }) {
   }
 
   return (
-    <div className="flex max-w-6xl gap-6 p-6">
-      <div className="min-w-0 flex-1 space-y-4">
-        <div>
-          <h1 className="text-lg font-semibold">資料に質問する</h1>
+    <div>
+      <header className="bg-header border-b">
+        <div className="flex items-center justify-between gap-3 px-4 py-2">
+          <h1 className="text-sm font-semibold">資料に質問する</h1>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-muted-foreground"
+            onClick={() => setStatsOpen((o) => !o)}
+            aria-expanded={statsOpen}
+            aria-controls="answer-stats-bar"
+            title={statsOpen ? '計測値を隠す' : '計測値を表示'}
+          >
+            計測値 {statsOpen ? <ChevronUp /> : <ChevronDown />}
+          </Button>
+        </div>
+        {stats.data && statsOpen && <AnswerStatsBar stats={stats.data} />}
+      </header>
+      <div className="flex max-w-6xl gap-6 p-6">
+        <div className="min-w-0 flex-1 space-y-4">
           <p className="text-muted-foreground text-sm">
             承認済みの資料から根拠を探し、AIが根拠を選びます。値・ページは原文から表示し、根拠のない回答はしません。
           </p>
-        </div>
-        <form onSubmit={submit} className="space-y-2">
-          <div className="flex gap-2">
-            <input
-              className={`${inputClass} h-9 flex-1`}
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="例: トヨタの直近の有利子負債はいくら？"
-              maxLength={1000}
-            />
-            <Button type="submit" disabled={busy || !question.trim()}>
-              {busy ? <Loader2 className="animate-spin" /> : <MessageSquareQuote />} 質問
-            </Button>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <span className="text-muted-foreground">企業:</span>
-            {(issuers.data ?? []).map((i) => (
-              <label key={i.id} className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={issuerIds.includes(i.id)}
-                  onChange={(e) => setIssuerIds((ids) => (e.target.checked ? [...ids, i.id] : ids.filter((x) => x !== i.id)))}
-                />
-                {i.name}
-              </label>
-            ))}
-            {issuerIds.length === 0 && <span className="text-muted-foreground">（指定なし＝質問の企業名から判断）</span>}
-            <span className="text-muted-foreground ml-auto">モデル:</span>
-            <select
-              className={`${inputClass} h-7 w-auto py-0`}
-              value={model ?? models.data?.default ?? ''}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              {(models.data?.models ?? []).map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-        </form>
-        {busy && (
-          <p className="text-muted-foreground flex items-center gap-2 text-sm">
-            <Loader2 className="size-4 animate-spin" /> 根拠を検索・選択しています（10秒ほどかかります）
-          </p>
-        )}
-        {error && (
-          <Alert variant="destructive">
-            <AlertTitle>{error.title}</AlertTitle>
-            <AlertDescription>{error.message}</AlertDescription>
-          </Alert>
-        )}
-        {runId && existing.isLoading && <Loader2 className="animate-spin" />}
-        {run && <AnswerView run={run} />}
-      </div>
-      <aside className="hidden w-64 shrink-0 space-y-2 lg:block">
-        <h2 className="text-muted-foreground text-xs font-medium">最近の質問</h2>
-        {(recent.data ?? []).map((r) => (
-          <button
-            key={r.id}
-            onClick={() => navigate(`/docs/answer?run=${r.id}`)}
-            className={cn(
-              'hover:bg-muted block w-full space-y-1 rounded border p-2 text-left text-xs',
-              r.id === runId && 'border-primary',
-            )}
-          >
-            <div className="line-clamp-2">{r.question}</div>
-            <div className="flex items-center gap-1">
-              <StatusBadge status={r.status} />
-              <Badge variant="outline" className="text-[10px]">
-                {r.model}
-              </Badge>
+          <form onSubmit={submit} className="space-y-2">
+            <div className="flex gap-2">
+              <input
+                className={`${inputClass} h-9 flex-1`}
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="例: トヨタの直近の有利子負債はいくら？"
+                maxLength={1000}
+              />
+              <Button type="submit" disabled={busy || !question.trim()}>
+                {busy ? <Loader2 className="animate-spin" /> : <MessageSquareQuote />} 質問
+              </Button>
             </div>
-          </button>
-        ))}
-      </aside>
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <span className="text-muted-foreground">企業:</span>
+              {(issuers.data ?? []).map((i) => (
+                <label key={i.id} className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={issuerIds.includes(i.id)}
+                    onChange={(e) => setIssuerIds((ids) => (e.target.checked ? [...ids, i.id] : ids.filter((x) => x !== i.id)))}
+                  />
+                  {i.name}
+                </label>
+              ))}
+              {issuerIds.length === 0 && <span className="text-muted-foreground">（指定なし＝質問の企業名から判断）</span>}
+              <span className="text-muted-foreground ml-auto">モデル:</span>
+              <select
+                className={`${inputClass} h-7 w-auto py-0`}
+                value={model ?? models.data?.default ?? ''}
+                onChange={(e) => setModel(e.target.value)}
+              >
+                {(models.data?.models ?? []).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </form>
+          {busy && (
+            <p className="text-muted-foreground flex items-center gap-2 text-sm">
+              <Loader2 className="size-4 animate-spin" /> 根拠を検索・選択しています（10秒ほどかかります）
+            </p>
+          )}
+          {error && (
+            <Alert variant="destructive">
+              <AlertTitle>{error.title}</AlertTitle>
+              <AlertDescription>{error.message}</AlertDescription>
+            </Alert>
+          )}
+          {runId && existing.isLoading && <Loader2 className="animate-spin" />}
+          {run && <AnswerView run={run} />}
+        </div>
+        <aside className="hidden w-64 shrink-0 space-y-2 lg:block">
+          <h2 className="text-muted-foreground text-xs font-medium">最近の質問</h2>
+          {(recent.data ?? []).map((r) => (
+            <button
+              key={r.id}
+              onClick={() => navigate(`/docs/answer?run=${r.id}`)}
+              className={cn(
+                'hover:bg-muted block w-full space-y-1 rounded border p-2 text-left text-xs',
+                r.id === runId && 'border-primary',
+              )}
+            >
+              <div className="line-clamp-2">{r.question}</div>
+              <div className="flex items-center gap-1">
+                <StatusBadge status={r.status} />
+                <Badge variant="outline" className="text-[10px]">
+                  {r.model}
+                </Badge>
+              </div>
+            </button>
+          ))}
+        </aside>
+      </div>
     </div>
   )
 }

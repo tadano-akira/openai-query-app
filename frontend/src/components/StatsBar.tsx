@@ -1,7 +1,7 @@
 import type { ConversationStats } from '@/lib/api'
 import { formatMs, formatUsd } from '@/lib/format'
 
-function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
+export function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
     <div className="min-w-0">
       <div className="text-muted-foreground text-[11px]">{label}</div>

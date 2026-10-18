@@ -1,6 +1,7 @@
 """資料Q&A の API（PDF 登録・抽出・レビュー・根拠表示・検索・回答）。すべてログイン必須。"""
 
 import uuid
+from dataclasses import asdict
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -26,7 +27,6 @@ from app.doc_models import (
     Extraction,
     Issuer,
     Job,
-    LlmCall,
     Page,
     RetrievalHit,
     SearchRun,
@@ -35,6 +35,7 @@ from app.doc_models import (
 from app.models import User, utcnow
 from app.routers.auth import current_user, require_csrf_header
 from app.services.answers import service as answers
+from app.services.answers import usage as answer_usage
 from app.services.chat import ChatError
 from app.services.pdf.extract import PARSER_VERSION
 from app.services.pdf.storage import StorageError, path_for, save_upload
@@ -977,6 +978,7 @@ class AnswerRunOut(AnswerRunSummary):
     completed_at: datetime | None
     langfuse_url: str | None
     estimated_cost_usd: float | None
+    usage: dict[str, Any]
 
 
 def _tracer(request: Request) -> Tracer:
@@ -984,12 +986,7 @@ def _tracer(request: Request) -> Tracer:
 
 
 async def _answer_run_out(session: AsyncSession, run: AnswerRun, tr: Tracer) -> AnswerRunOut:
-    cost = await session.scalar(
-        select(func.sum(LlmCall.estimated_cost_usd)).where(
-            (LlmCall.answer_run_id == run.id)
-            | ((LlmCall.search_run_id == run.search_run_id) & (LlmCall.search_run_id.is_not(None)))
-        )
-    )
+    usage = (await answer_usage.run_usage(session, [run.id]))[run.id]
     return AnswerRunOut(
         id=run.id,
         question=run.question,
@@ -1009,7 +1006,8 @@ async def _answer_run_out(session: AsyncSession, run: AnswerRun, tr: Tracer) -> 
         timings=run.timings,
         completed_at=run.completed_at,
         langfuse_url=tr.trace_url(run.langfuse_trace_id),
-        estimated_cost_usd=cost,
+        estimated_cost_usd=usage.estimated_cost_usd if usage.llm_call_count else None,
+        usage=asdict(usage),
     )
 
 
@@ -1030,6 +1028,12 @@ async def create_answer(
     except ChatError as e:
         raise HTTPException(e.status_code, detail={"code": e.code, "message": e.message, **e.extra}) from e
     return await _answer_run_out(session, run, tr)
+
+
+@router.get("/answer-stats")
+async def get_answer_stats(session: AsyncSession = Depends(get_session)):
+    """資料Q&A のすべての回答の累計（実行回数・トークン・推定料金・所要時間）"""
+    return asdict(await answer_usage.stats(session))
 
 
 @router.get("/answer-runs", response_model=list[AnswerRunSummary])
