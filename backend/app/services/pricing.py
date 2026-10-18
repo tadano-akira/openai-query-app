@@ -39,6 +39,20 @@ PRICES: dict[str, ModelPrice] = {
     "gpt-4.1-mini": ModelPrice(Price(0.40, 0.10, 1.60)),
 }
 
+# 埋め込みモデルの 100 万入力トークンあたりの USD 単価（2026-10-18 確認）
+EMBEDDING_PRICES: dict[str, float] = {
+    "text-embedding-3-small": 0.02,
+    "text-embedding-3-large": 0.13,
+    "text-embedding-ada-002": 0.10,
+}
+
+
+def embedding_cost_usd(model: str, input_tokens: int | None) -> float | None:
+    price = EMBEDDING_PRICES.get(model)
+    if price is None or input_tokens is None:
+        return None
+    return input_tokens * price / 1_000_000
+
 
 def call_cost_usd(
     model: str, input_tokens: int | None, cached_input_tokens: int | None, output_tokens: int | None

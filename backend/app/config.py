@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: int = 15
     job_max_attempts: int = 2
 
+    # 資料Q&A の検索（段階 4）。埋め込みモデルを変えると索引を作り直す（モデルごとに別に保存される）
+    embedding_model: str = "text-embedding-3-small"
+    lexical_top_k: int = 30
+    vector_top_k: int = 30
+    context_top_k: int = 12
+    # Reciprocal Rank Fusion の定数（score = Σ 1 / (rrf_k + rank)）
+    rrf_k: int = 60
+
     # ログイン（メールアドレス＋パスワード、利用者は 1 人。アカウントは python -m app.cli で作る）
     # 最後に使ってからこの日数でログイン状態が切れる
     session_days: int = 30

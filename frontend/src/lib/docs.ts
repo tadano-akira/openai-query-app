@@ -24,6 +24,10 @@ export type Extraction = {
   active: boolean
   created_at: string
   completed_at: string | null
+  index_status: 'none' | 'queued' | 'running' | 'ready' | 'failed'
+  index_error: string | null
+  index_model: string | null
+  indexed_at: string | null
 }
 
 export type DocVersion = {
@@ -123,6 +127,59 @@ export type Evidence = {
   viewer_url: string
 }
 
+export type SearchHit = {
+  rank: number
+  chunk_id: string
+  kind: 'text' | 'table'
+  heading: string | null
+  text: string
+  page_number: number
+  pdf_page_label: string | null
+  extraction_id: string
+  version_id: string
+  document_title: string
+  issuer_name: string
+  period_label: string | null
+  lexical_rank: number | null
+  lexical_score: number | null
+  vector_rank: number | null
+  vector_score: number | null
+  rrf_score: number
+  evidence: { element_id: string; role: string; text: string }[]
+}
+
+export type SearchRun = {
+  id: string
+  question: string
+  status: 'succeeded' | 'no_scope' | 'running'
+  scope: { extraction_id: string; version_id: string; title: string; issuer: string; period_label: string | null }[]
+  expanded_terms: string[]
+  embedding_model: string | null
+  timings: { total_ms?: number; lexical_ms?: number; embedding_ms?: number; vector_ms?: number; terms?: string[] }
+  created_at: string
+  hits: SearchHit[]
+}
+
+export type ChunkDetail = {
+  chunk_id: string
+  kind: 'text' | 'table'
+  heading: string | null
+  text: string
+  page_number: number
+  extraction_id: string
+  version_id: string
+  elements: DocElement[]
+  roles: Record<string, string>
+}
+
+export const INDEX_LABELS: Record<string, string> = {
+  none: '索引なし',
+  queued: '索引作成待ち',
+  running: '索引作成中',
+  ready: '索引作成済み',
+  failed: '索引作成失敗',
+}
+
 export const DOCUMENT_TYPE_LABELS: Record<string, string> = {
   tanshin_q1: '第1四半期決算短信',
   tanshin_q2: '第2四半期（中間期）決算短信',
@@ -217,4 +274,13 @@ export const docsApi = {
   activate: (extractionId: string) =>
     request<Extraction>(`/api/v1/extractions/${extractionId}/activate`, { method: 'POST' }),
   evidence: (elementId: string) => request<Evidence>(`/api/v1/evidence/${elementId}`),
+  index: (extractionId: string) =>
+    request<Extraction>(`/api/v1/extractions/${extractionId}/index`, { method: 'POST' }),
+  search: (question: string, issuerIds: string[]) =>
+    request<SearchRun>('/api/v1/search', {
+      method: 'POST',
+      body: JSON.stringify({ question, issuer_ids: issuerIds }),
+    }),
+  searchRun: (id: string) => request<SearchRun>(`/api/v1/search-runs/${id}`),
+  chunk: (id: string) => request<ChunkDetail>(`/api/v1/chunks/${id}`),
 }

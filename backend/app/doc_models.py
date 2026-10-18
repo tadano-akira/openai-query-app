@@ -9,15 +9,18 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -44,6 +47,8 @@ OFFICIAL_STATUSES = ("unconfirmed", "confirmed", "rejected")
 # 抽出処理の状態
 EXTRACTION_STATUSES = ("queued", "running", "succeeded", "failed")
 # 抽出結果の品質（自動判定。正確性の証明ではない）
+INDEX_STATUSES = ("none", "queued", "running", "ready", "failed")
+CHUNK_KINDS = ("text", "table")
 EXTRACTION_QUALITIES = ("ok", "needs_review", "partial", "unsupported_no_text")
 PAGE_QUALITIES = ("ok", "blank", "non_text", "needs_review")
 ELEMENT_KINDS = ("line", "table", "cell")
@@ -166,6 +171,11 @@ class Extraction(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 検索用の索引（チャンク・埋め込み）。既定にしたときに作る
+    index_status: Mapped[str] = mapped_column(String(20), default="none", server_default="none")
+    index_error: Mapped[str | None] = mapped_column(Text)
+    index_model: Mapped[str | None] = mapped_column(String(100))
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     version: Mapped[DocumentVersion] = relationship(back_populates="extractions")
 
@@ -282,3 +292,115 @@ class AuditEvent(Base):
     target_id: Mapped[uuid.UUID] = mapped_column(index=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ---- 段階 4: 検索 -------------------------------------------------------------------------
+
+
+class Chunk(Base):
+    """検索用のまとまり（本文の段落群・表の行群）。引用の最小単位ではなく、根拠は chunk_elements で要素に戻す"""
+
+    __tablename__ = "chunks"
+    __table_args__ = (
+        CheckConstraint(_in("kind", CHUNK_KINDS), name="ck_chunks_kind"),
+        UniqueConstraint("extraction_id", "seq"),
+        Index(
+            "ix_chunks_search_text_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    extraction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("extractions.id", ondelete="CASCADE"), index=True
+    )
+    page_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pages.id", ondelete="CASCADE"))
+    page_number: Mapped[int] = mapped_column(Integer)
+    seq: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(10))
+    # 直近の見出し（本文）または表題（表）
+    heading: Mapped[str | None] = mapped_column(Text)
+    text: Mapped[str] = mapped_column(Text)
+    # NFKC・小文字・空白整理（字句検索用）
+    search_text: Mapped[str] = mapped_column(Text)
+    token_count: Mapped[int] = mapped_column(Integer)
+
+
+class ChunkElement(Base):
+    """チャンクと根拠要素の対応。offset はチャンク本文内の位置（コードポイント、半開区間）"""
+
+    __tablename__ = "chunk_elements"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chunks.id", ondelete="CASCADE"), primary_key=True)
+    element_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("elements.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    start_offset: Mapped[int] = mapped_column(Integer, primary_key=True)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    # content（本文・値）/ header（列見出し・行見出し）/ unit（単位注記）/ title（表題）
+    role: Mapped[str] = mapped_column(String(10))
+
+
+class Embedding(Base):
+    """チャンクの埋め込み。モデルごとに分け、別モデルのベクトルを混ぜて検索しない"""
+
+    __tablename__ = "embeddings"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chunks.id", ondelete="CASCADE"), primary_key=True)
+    model_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    dimensions: Mapped[int] = mapped_column(Integer)
+    # 次元はモデルごとに異なるため列では固定しない（少量のうちは exact search。HNSW は必要になってから）
+    embedding: Mapped[list[float]] = mapped_column(Vector())
+
+
+class SearchRun(Base):
+    """検索 1 回の記録。対象にした抽出版の集合（スコープ）と順位を固定して残す"""
+
+    __tablename__ = "search_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    question: Mapped[str] = mapped_column(Text)
+    filters: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # 対象の抽出版（id・資料・版）。質問受付時点の集合
+    scope_snapshot: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # 同義語辞書で追加した検索語
+    expanded_terms: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    embedding_model: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20))
+    error_code: Mapped[str | None] = mapped_column(String(60))
+    timings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class RetrievalHit(Base):
+    __tablename__ = "retrieval_hits"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("search_runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chunks.id"), primary_key=True)
+    lexical_rank: Mapped[int | None] = mapped_column(Integer)
+    lexical_score: Mapped[float | None] = mapped_column(Float)
+    vector_rank: Mapped[int | None] = mapped_column(Integer)
+    vector_score: Mapped[float | None] = mapped_column(Float)
+    rrf_score: Mapped[float] = mapped_column(Float)
+    final_rank: Mapped[int] = mapped_column(Integer)
+
+
+class LlmCall(Base):
+    """資料Q&A の外部モデル呼び出し（埋め込み等）の観測と推定料金。利用上限の集計に含める"""
+
+    __tablename__ = "llm_calls"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    purpose: Mapped[str] = mapped_column(String(40))
+    model: Mapped[str] = mapped_column(String(100))
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6, asdecimal=False))
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(60))
+    extraction_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("extractions.id", ondelete="SET NULL"))
+    search_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("search_runs.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

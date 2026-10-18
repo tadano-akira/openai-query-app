@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.doc_models import LlmCall
 from app.models import Run, RunStatus
 from app.schemas import UsagePeriod, UsageSummary
 
@@ -19,17 +20,27 @@ def period_starts(tz_name: str, now: datetime | None = None) -> tuple[datetime, 
     return day, day.replace(day=1)
 
 
+def period_stmts(since: datetime):
+    """期間内のチャット実行（回数・推定額・単価不明件数）と、資料Q&A の外部呼び出し（埋め込み等）の推定額。
+    同期（ワーカー）・非同期（API）の両方から使う"""
+    runs = select(
+        func.count(),
+        func.coalesce(func.sum(Run.estimated_cost_usd), 0),
+        func.count().filter(Run.estimated_cost_usd.is_(None), Run.status != RunStatus.RUNNING),
+    ).where(Run.created_at >= since)
+    calls = select(
+        func.coalesce(func.sum(LlmCall.estimated_cost_usd), 0),
+        func.count().filter(LlmCall.estimated_cost_usd.is_(None)),
+    ).where(LlmCall.created_at >= since)
+    return runs, calls
+
+
 async def _period(session: AsyncSession, since: datetime) -> tuple[int, float, int]:
-    row = (
-        await session.execute(
-            select(
-                func.count(),
-                func.coalesce(func.sum(Run.estimated_cost_usd), 0),
-                func.count().filter(Run.estimated_cost_usd.is_(None), Run.status != RunStatus.RUNNING),
-            ).where(Run.created_at >= since)
-        )
-    ).one()
-    return int(row[0]), float(row[1]), int(row[2])
+    runs_stmt, calls_stmt = period_stmts(since)
+    runs = (await session.execute(runs_stmt)).one()
+    calls = (await session.execute(calls_stmt)).one()
+    # 回数の上限はチャットの実行だけを数える。金額は埋め込み等も含める
+    return int(runs[0]), float(runs[1]) + float(calls[0]), int(runs[2]) + int(calls[1])
 
 
 def _limit(v: float) -> float | None:

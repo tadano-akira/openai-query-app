@@ -83,11 +83,11 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 - `node_modules` と Python venv は named volume に置いている。依存を変えたら
   `docker compose restart frontend` / `docker compose up -d --build backend`。
 
-## 資料Q&A（PDF 根拠提示型 RAG、段階 1〜3）
+## 資料Q&A（PDF 根拠提示型 RAG、段階 1〜4）
 
 画面左上の「資料Q&A」で、公式の決算資料 PDF を登録・解析・レビューし、根拠を原本上でハイライト表示する。
 設計は [docs/PDF_Evidence_RAG_System_Design.md](docs/PDF_Evidence_RAG_System_Design.md)（v1.2）に従う。今回は段階 1〜3（登録・抽出・レビュー・ハイライト）で、
-検索と引用つき回答（段階 4 以降）はまだない。OCR は使わない。
+段階 4（検索）まで実装済みで、引用つきの回答生成（段階 5 以降）はまだない。OCR は使わない。
 
 1. **PDFを登録**: 企業（証券コード）・資料名・種別・対象期・連結区分・公表日・公式の掲載元 URL を入力してアップロードする。
    原本は内容の SHA-256 をキーに `pdf_data` volume へそのまま保存する（元のファイル名は使わない）。同じ企業に同じ PDF は登録できない。
@@ -105,6 +105,23 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 - PDF.js の文字コード対応表・標準フォントは `/pdfjs/` からアプリ自身が配信する（外部 CDN を使わない）。
 - 原本 PDF はバックアップ（`pdfs.tar`）に含め、復元テストでファイル名（SHA-256）と内容の一致を確かめる。
 - PyMuPDF は AGPL-3.0。非公開・個人利用の現在の形態では問題ないが、配布・サービス提供する場合は再確認する。
+
+### 検索（段階 4）
+
+6. **索引**: 抽出版を「既定にする」と、`worker` がチャンクを作り、OpenAI の埋め込み（`EMBEDDING_MODEL`、既定 `text-embedding-3-small`）を
+   pgvector に保存する。版の詳細画面で状態の確認・作り直しができる。トヨタの 1Q 短信（19 ページ）で 150 チャンク・約 $0.0014。
+7. **検索（試験）**: 承認済み・既定・公式性確認済み・索引作成済みの抽出版だけを対象に、字句検索（pg_trgm の類似度＋語の出現、IDF で重み付け）と
+   ベクトル検索（完全探索）の上位 30 件ずつを RRF（k=60）で統合し、上位 12 件を返す。結果から原本上のチャンクの位置を開ける。
+
+- チャンク: 本文はページ内で約 500 トークン（上限 800、重なり 100）。表は表題・単位・列見出しを各チャンクに再掲し、
+  行を「行見出し | 列見出し: 値」で並べる。ページ見出し（多くのページに繰り返し出る行）は除き、改ページした表は表題を引き継ぐ。
+- 均等割付の「研 究 開 発 費」のような語は、検索用の文字列と質問の両方で空白を詰めて照合する。
+- 同義語辞書は `backend/search/synonyms.json`（例: 有利子負債 → 借入金・社債・リース負債）。同義語は指標への算入を意味しない。
+- 質問は埋め込みのため OpenAI へ送るので、チャットと同じ機密情報検知・利用上限を通す。埋め込みの推定料金は利用状況（1 日・1 か月の金額）に含める。
+- 検索ごとに対象の抽出版（スコープ）と順位を `search_runs` / `retrieval_hits` に記録する。
+- 評価: `docker compose exec backend python -m app.cli eval-search search/eval/toyota_2027q1.json`
+  （18 問。2026-10-18 時点で Recall@12 = 100%、MRR = 0.850。設計書の目標は Recall@12 ≥ 95%）。
+- DB のイメージは pgvector 入り（`pgvector/pgvector:0.8.6-pg17-trixie`。公式 postgres:17 と同じ Debian 13 で、データはそのまま使える）。
 
 ## 送信前の機密情報検知（Presidio）
 
@@ -213,6 +230,7 @@ reasoning_effort: low          # 任意: minimal / low / medium / high
 | `PRESIDIO_URL` | `http://presidio:3000` | Presidio Analyzer の URL |
 | `SECRET_SCAN_MIN_SCORE` | `0.5` | この確からしさ以上をブロック |
 | `SECRET_SCAN_FAIL_OPEN` | `false` | Presidio 停止時に検査なしで送るか |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | 資料Q&A の検索に使う埋め込みモデル（変えたら索引を作り直す） |
 | `MAX_PDF_BYTES` / `MAX_PDF_PAGES` | `52428800` / `500` | 資料Q&A の PDF の上限 |
 | `PARSER_TIMEOUT_SECONDS` | `600` | 1 文書の解析時間の上限 |
 | `SESSION_DAYS` | `30` | 最後に使ってからログイン状態が切れるまでの日数 |

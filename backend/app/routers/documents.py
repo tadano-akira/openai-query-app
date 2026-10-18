@@ -17,6 +17,8 @@ from app.doc_models import (
     DOCUMENT_TYPES,
     SCOPES,
     AuditEvent,
+    Chunk,
+    ChunkElement,
     Document,
     DocumentVersion,
     Element,
@@ -24,12 +26,16 @@ from app.doc_models import (
     Issuer,
     Job,
     Page,
+    RetrievalHit,
+    SearchRun,
     TableCell,
 )
 from app.models import User, utcnow
 from app.routers.auth import current_user, require_csrf_header
+from app.services.chat import ChatError
 from app.services.pdf.extract import PARSER_VERSION
 from app.services.pdf.storage import StorageError, path_for, save_upload
+from app.services.search import retrieval
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_csrf_header), Depends(current_user)])
 
@@ -101,6 +107,10 @@ class ExtractionOut(BaseModel):
     active: bool
     created_at: datetime
     completed_at: datetime | None
+    index_status: str
+    index_error: str | None
+    index_model: str | None
+    indexed_at: datetime | None
 
 
 class VersionOut(BaseModel):
@@ -153,6 +163,10 @@ def _extraction_out(e: Extraction) -> ExtractionOut:
         active=e.active,
         created_at=e.created_at,
         completed_at=e.completed_at,
+        index_status=e.index_status,
+        index_error=e.index_error,
+        index_model=e.index_model,
+        indexed_at=e.indexed_at,
     )
 
 
@@ -637,6 +651,37 @@ async def activate(
     await session.flush()
     e.active = True
     _audit(session, user, "extraction.activate", "extraction", e.id, version_id=str(e.version_id))
+    # 既定にした抽出版は検索対象になるので、索引がなければ作る
+    if not (
+        e.index_status in ("ready", "queued", "running") and e.index_model == get_settings().embedding_model
+    ):
+        await _queue_index(session, e)
+    await session.commit()
+    return _extraction_out(e)
+
+
+async def _queue_index(session: AsyncSession, e: Extraction) -> Job:
+    e.index_status = "queued"
+    e.index_error = None
+    e.index_model = get_settings().embedding_model
+    job = Job(kind="index", payload={"extraction_id": str(e.id)})
+    session.add(job)
+    await session.flush()
+    return job
+
+
+@router.post("/extractions/{extraction_id}/index", response_model=ExtractionOut, status_code=202)
+async def index_extraction(
+    extraction_id: uuid.UUID, session: AsyncSession = Depends(get_session), user: User = Depends(current_user)
+):
+    """検索用索引（チャンク・埋め込み）を作り直す。承認済みの抽出版のみ"""
+    e = await _extraction(session, extraction_id)
+    if e.approved_at is None:
+        raise _err(409, "NOT_APPROVED", "承認していない抽出版の索引は作れません")
+    if e.index_status in ("queued", "running"):
+        raise _err(409, "INDEX_IN_PROGRESS", "索引を作成中です")
+    await _queue_index(session, e)
+    _audit(session, user, "extraction.index", "extraction", e.id, model=get_settings().embedding_model)
     await session.commit()
     return _extraction_out(e)
 
@@ -710,4 +755,185 @@ async def evidence(element_id: uuid.UUID, session: AsyncSession = Depends(get_se
         issuer_name=doc.issuer.name,
         period_label=v.period_label,
         viewer_url=f"/viewer/evidence/{el.id}",
+    )
+
+
+# ---- 段階 4: 検索 -----------------------------------------------------------------------------
+
+
+class SearchIn(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    issuer_ids: list[uuid.UUID] = []
+    document_types: list[DocumentType] = []
+    version_ids: list[uuid.UUID] = []
+
+
+class HitEvidence(BaseModel):
+    element_id: uuid.UUID
+    role: str
+    text: str
+
+
+class SearchHitOut(BaseModel):
+    rank: int
+    chunk_id: uuid.UUID
+    kind: str
+    heading: str | None
+    text: str
+    page_number: int
+    pdf_page_label: str | None
+    extraction_id: uuid.UUID
+    version_id: uuid.UUID
+    document_title: str
+    issuer_name: str
+    period_label: str | None
+    lexical_rank: int | None
+    lexical_score: float | None
+    vector_rank: int | None
+    vector_score: float | None
+    rrf_score: float
+    evidence: list[HitEvidence]
+
+
+class SearchRunOut(BaseModel):
+    id: uuid.UUID
+    question: str
+    status: str
+    scope: list[dict[str, Any]]
+    expanded_terms: list[str]
+    embedding_model: str | None
+    timings: dict[str, Any]
+    created_at: datetime
+    hits: list[SearchHitOut]
+
+
+async def _search_run_out(session: AsyncSession, run: SearchRun) -> SearchRunOut:
+    rows = (
+        await session.execute(
+            select(RetrievalHit, Chunk, Page.pdf_page_label, DocumentVersion, Document.title, Issuer.name)
+            .join(Chunk, Chunk.id == RetrievalHit.chunk_id)
+            .join(Page, Page.id == Chunk.page_id)
+            .join(Extraction, Extraction.id == Chunk.extraction_id)
+            .join(DocumentVersion, DocumentVersion.id == Extraction.version_id)
+            .join(Document, Document.id == DocumentVersion.document_id)
+            .join(Issuer, Issuer.id == Document.issuer_id)
+            .where(RetrievalHit.run_id == run.id)
+            .order_by(RetrievalHit.final_rank)
+        )
+    ).all()
+    chunk_ids = [row[1].id for row in rows]
+    parts = (
+        await session.execute(
+            select(ChunkElement, Element.raw_text)
+            .join(Element, Element.id == ChunkElement.element_id)
+            .where(ChunkElement.chunk_id.in_(chunk_ids))
+            .order_by(ChunkElement.start_offset)
+        )
+    ).all()
+    by_chunk: dict[uuid.UUID, list[HitEvidence]] = {}
+    for ce, text_ in parts:
+        by_chunk.setdefault(ce.chunk_id, []).append(
+            HitEvidence(element_id=ce.element_id, role=ce.role, text=text_)
+        )
+    hits = [
+        SearchHitOut(
+            rank=h.final_rank,
+            chunk_id=c.id,
+            kind=c.kind,
+            heading=c.heading,
+            text=c.text,
+            page_number=c.page_number,
+            pdf_page_label=label,
+            extraction_id=c.extraction_id,
+            version_id=v.id,
+            document_title=title,
+            issuer_name=issuer,
+            period_label=v.period_label,
+            lexical_rank=h.lexical_rank,
+            lexical_score=h.lexical_score,
+            vector_rank=h.vector_rank,
+            vector_score=h.vector_score,
+            rrf_score=h.rrf_score,
+            evidence=by_chunk.get(c.id, []),
+        )
+        for h, c, label, v, title, issuer in rows
+    ]
+    return SearchRunOut(
+        id=run.id,
+        question=run.question,
+        status=run.status,
+        scope=run.scope_snapshot,
+        expanded_terms=run.expanded_terms,
+        embedding_model=run.embedding_model,
+        timings=run.timings,
+        created_at=run.created_at,
+        hits=hits,
+    )
+
+
+@router.post("/search", response_model=SearchRunOut)
+async def search(body: SearchIn, session: AsyncSession = Depends(get_session)):
+    """承認済み・既定・公式性確認済みの抽出版だけを対象に、字句＋ベクトル検索する（回答生成は段階 5）"""
+    try:
+        run = await retrieval.search(
+            session,
+            get_settings(),
+            body.question,
+            retrieval.Filters(body.issuer_ids, list(body.document_types), body.version_ids),
+        )
+    except ChatError as e:
+        raise HTTPException(e.status_code, detail={"code": e.code, "message": e.message, **e.extra}) from e
+    return await _search_run_out(session, run)
+
+
+@router.get("/search-runs/{run_id}", response_model=SearchRunOut)
+async def get_search_run(run_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    run = await session.get(SearchRun, run_id)
+    if run is None:
+        raise _err(404, "NOT_FOUND", "検索結果が見つかりません")
+    return await _search_run_out(session, run)
+
+
+class ChunkOut(BaseModel):
+    chunk_id: uuid.UUID
+    kind: str
+    heading: str | None
+    text: str
+    page_number: int
+    extraction_id: uuid.UUID
+    version_id: uuid.UUID
+    elements: list[ElementOut]
+    roles: dict[str, str]
+
+
+@router.get("/chunks/{chunk_id}", response_model=ChunkOut)
+async def get_chunk(chunk_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """チャンクを構成する根拠要素（原本上でまとめて強調するため）"""
+    c = await session.get(Chunk, chunk_id)
+    if c is None:
+        raise _err(404, "NOT_FOUND", "チャンクが見つかりません")
+    e = await _extraction(session, c.extraction_id)
+    rows = (
+        await session.execute(
+            select(ChunkElement.role, Element)
+            .join(Element, Element.id == ChunkElement.element_id)
+            .where(ChunkElement.chunk_id == c.id)
+            .order_by(ChunkElement.start_offset)
+        )
+    ).all()
+    seen: dict[uuid.UUID, Element] = {}
+    roles: dict[str, str] = {}
+    for role, el in rows:
+        seen.setdefault(el.id, el)
+        roles.setdefault(str(el.id), role)
+    return ChunkOut(
+        chunk_id=c.id,
+        kind=c.kind,
+        heading=c.heading,
+        text=c.text,
+        page_number=c.page_number,
+        extraction_id=c.extraction_id,
+        version_id=e.version_id,
+        elements=[_element_out(el) for el in seen.values()],
+        roles=roles,
     )

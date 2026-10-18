@@ -10,7 +10,8 @@ x-logging: &logging
 
 services:
   db:
-    image: docker.io/postgres:17
+    # pgvector 拡張入りの PostgreSQL 17（公式 postgres:17 と同じ Debian 13 trixie。照合順序が変わらない）
+    image: docker.io/pgvector/pgvector:0.8.6-pg17-trixie
     restart: unless-stopped
     environment:
       POSTGRES_USER: app

@@ -94,6 +94,58 @@ def _context_chars(context: list[dict[str, str]], prompt: str, instructions: str
     return sum(len(m["content"]) for m in context) + len(prompt) + len(instructions)
 
 
+async def guard_secrets(
+    settings: Settings, prompt: str, conversation_id: uuid.UUID | None, source: str
+) -> None:
+    """OpenAI へ送る前の機密情報検知。検知したら記録して 422 でブロックする（チャット・資料Q&A の検索で共用）。
+    検知した値そのものは返さない・残さない。"""
+    try:
+        findings = await secret_scan.scan(settings, prompt)
+    except secret_scan.ScanUnavailable as e:
+        if settings.secret_scan_fail_open:
+            log.warning("secret scan unavailable, sending without scan (fail-open): %s", e)
+            return
+        log.error("secret scan unavailable, blocked: %s", e)
+        raise ChatError(
+            503,
+            "secret_scan_unavailable",
+            "機密情報の検査サービス（Presidio）に接続できないため、送信を中止しました",
+        ) from e
+    if not findings:
+        return
+    summary = [
+        {"entity": f.entity, "label": f.label, "start": f.start, "end": f.end, "score": f.score}
+        for f in findings
+    ]
+    log.warning(
+        "secret detected, blocked: source=%s conversation=%s entities=%s",
+        source,
+        conversation_id,
+        [f.entity for f in findings],
+    )
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                SecretDetection(
+                    conversation_id=conversation_id,
+                    source=source,
+                    findings=summary,
+                    prompt_chars=len(prompt),
+                )
+            )
+            await session.commit()
+    except SQLAlchemyError:
+        log.exception("failed to record secret detection")
+    labels = "、".join(dict.fromkeys(f.label for f in findings))
+    raise ChatError(
+        422,
+        "secret_detected",
+        f"機密情報の可能性がある文字列を検知したため、送信を中止しました（{labels}）。"
+        "該当部分を削除・置き換えてから送信してください",
+        extra={"findings": [{**s, "masked": f.masked} for s, f in zip(summary, findings, strict=True)]},
+    )
+
+
 class ChatService:
     def __init__(self, settings: Settings, tracer: Tracer) -> None:
         self.settings = settings
@@ -218,52 +270,7 @@ class ChatService:
         return model
 
     async def _scan_secrets(self, prompt: str, conversation_id: uuid.UUID, source: str) -> None:
-        """機密情報を検知したら記録して 422 でブロックする。検知した値そのものは返さない・残さない。"""
-        try:
-            findings = await secret_scan.scan(self.settings, prompt)
-        except secret_scan.ScanUnavailable as e:
-            if self.settings.secret_scan_fail_open:
-                log.warning("secret scan unavailable, sending without scan (fail-open): %s", e)
-                return
-            log.error("secret scan unavailable, blocked: %s", e)
-            raise ChatError(
-                503,
-                "secret_scan_unavailable",
-                "機密情報の検査サービス（Presidio）に接続できないため、送信を中止しました",
-            ) from e
-        if not findings:
-            return
-        summary = [
-            {"entity": f.entity, "label": f.label, "start": f.start, "end": f.end, "score": f.score}
-            for f in findings
-        ]
-        log.warning(
-            "secret detected, blocked: source=%s conversation=%s entities=%s",
-            source,
-            conversation_id,
-            [f.entity for f in findings],
-        )
-        try:
-            async with SessionLocal() as session:
-                session.add(
-                    SecretDetection(
-                        conversation_id=conversation_id,
-                        source=source,
-                        findings=summary,
-                        prompt_chars=len(prompt),
-                    )
-                )
-                await session.commit()
-        except SQLAlchemyError:
-            log.exception("failed to record secret detection")
-        labels = "、".join(dict.fromkeys(f.label for f in findings))
-        raise ChatError(
-            422,
-            "secret_detected",
-            f"機密情報の可能性がある文字列を検知したため、送信を中止しました（{labels}）。"
-            "該当部分を削除・置き換えてから送信してください",
-            extra={"findings": [{**s, "masked": f.masked} for s, f in zip(summary, findings, strict=True)]},
-        )
+        await guard_secrets(self.settings, prompt, conversation_id, source)
 
     def _instructions(self, mode: str | None) -> prompts.Instructions:
         try:

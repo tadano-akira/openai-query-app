@@ -25,6 +25,7 @@ from app.doc_models import DocumentVersion, Element, Extraction, Job, Page, Tabl
 from app.models import utcnow
 from app.services.pdf import extract
 from app.services.pdf.storage import path_for
+from app.services.search import indexing
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("worker")
@@ -273,8 +274,52 @@ def _mark_extraction_failed(Session_: sessionmaker[Session], extraction_id: str,
         )
 
 
+def process_index(Session_: sessionmaker[Session], job: Job) -> None:
+    """検索用索引の作成（PyMuPDF を使わないので子プロセスにはしない）。全件成功したときだけコミットする"""
+    settings = get_settings()
+    extraction_id = uuid.UUID(job.payload["extraction_id"])
+
+    def record(call) -> None:
+        with Session_() as s, s.begin():
+            s.add(call)
+
+    def set_status(status: str, error: str | None = None) -> None:
+        with Session_() as s, s.begin():
+            s.execute(
+                update(Extraction)
+                .where(Extraction.id == extraction_id)
+                .values(index_status=status, index_error=error)
+            )
+
+    stop = threading.Event()
+    beat = threading.Thread(target=_heartbeat, args=(Session_, job.id, stop), daemon=True)
+    beat.start()
+    started = time.monotonic()
+    set_status("running")
+    try:
+        with Session_() as session, session.begin():
+            stats = indexing.build_index(session, settings, extraction_id, record)
+    except indexing.IndexError_ as e:
+        set_status("failed", e.message)
+        _finish(Session_, job, "failed", e.code, e.message)
+        log.error("index job %s failed: %s", job.id, e.code)
+        return
+    except Exception as e:  # noqa: BLE001 - 状態を失敗にして記録する
+        log.exception("index job %s crashed", job.id)
+        set_status("failed", str(e)[:500])
+        _finish(Session_, job, "failed", "INDEX_ERROR", str(e)[:500])
+        return
+    finally:
+        stop.set()
+    _finish(Session_, job, "succeeded")
+    log.info("index job %s succeeded in %.1fs: %s", job.id, time.monotonic() - started, stats)
+
+
 def process(Session_: sessionmaker[Session], job: Job) -> None:
     settings = get_settings()
+    if job.kind == "index":
+        process_index(Session_, job)
+        return
     if job.kind != "extract":
         _finish(Session_, job, "failed", "UNKNOWN_JOB", f"未対応のジョブです: {job.kind}")
         return

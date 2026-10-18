@@ -4,11 +4,13 @@ import { useState } from 'react'
 
 import { ApprovalBadge, ExtractionBadge, Field, Link, OfficialBadge, inputClass } from '@/components/docs/common'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ApiError } from '@/lib/api'
 import {
   DOCUMENT_TYPE_LABELS,
+  INDEX_LABELS,
   QUALITY_LABELS,
   SCOPE_LABELS,
   docsApi,
@@ -81,7 +83,12 @@ export function VersionDetail({ versionId }: { versionId: string }) {
   const version = useQuery({
     queryKey: ['version', versionId],
     queryFn: () => docsApi.version(versionId),
-    refetchInterval: (q) => (q.state.data?.extractions.some((e) => ['queued', 'running'].includes(e.status)) ? 1500 : false),
+    refetchInterval: (q) =>
+      q.state.data?.extractions.some(
+        (e) => ['queued', 'running'].includes(e.status) || ['queued', 'running'].includes(e.index_status),
+      )
+        ? 1500
+        : false,
   })
   const v = version.data
   const doc = useQuery({
@@ -262,6 +269,14 @@ export function VersionDetail({ versionId }: { versionId: string }) {
                 </TableCell>
                 <TableCell className="text-xs">
                   <ApprovalBadge e={e} />
+                  {e.approved_at && (
+                    <div className="mt-1">
+                      <Badge variant={e.index_status === 'ready' ? 'secondary' : e.index_status === 'failed' ? 'destructive' : 'outline'}>
+                        {INDEX_LABELS[e.index_status]}
+                      </Badge>
+                      {e.index_error && <div className="text-destructive mt-1">{e.index_error}</div>}
+                    </div>
+                  )}
                   {e.approved_by && (
                     <div className="text-muted-foreground mt-1">
                       {e.approved_by}（{formatDate(e.approved_at).slice(0, 16)}）{e.approval_memo && `: ${e.approval_memo}`}
@@ -279,6 +294,11 @@ export function VersionDetail({ versionId }: { versionId: string }) {
                           既定にする
                         </Button>
                       )}
+                      {e.approved_at && e.active && !['queued', 'running'].includes(e.index_status) && (
+                        <Button size="xs" variant="outline" onClick={() => void run(() => docsApi.index(e.id))}>
+                          索引を{e.index_status === 'ready' ? '作り直す' : '作成'}
+                        </Button>
+                      )}
                     </div>
                   )}
                 </TableCell>
@@ -288,6 +308,7 @@ export function VersionDetail({ versionId }: { versionId: string }) {
         </Table>
         <p className="text-muted-foreground text-xs">
           承認はレビュー画面で行います。再解析しても既存の抽出版と、それを参照する根拠は変わりません。
+          既定にした抽出版には検索用の索引（チャンク・埋め込み）を自動で作ります。
         </p>
       </section>
     </div>
