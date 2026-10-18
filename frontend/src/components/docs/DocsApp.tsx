@@ -62,7 +62,7 @@ export function DocsApp() {
           </nav>
         </div>
         <div className="text-muted-foreground mt-auto space-y-1 p-3 text-[11px]">
-          <p>合算などの計算が必要な質問は、個々の値と根拠を示して「要確認」にします（計算は次の段階で対応）。</p>
+          <p>計算は承認済みの値だけを入力に Decimal で行い、入力値と式を表示します。</p>
           <p>OCRは使いません。画像だけのページは検索対象外です。</p>
         </div>
         <AccountBar />

@@ -7,7 +7,14 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ApiError, api } from '@/lib/api'
-import { docsApi, type AnswerItem, type AnswerRun, type AnswerStatus } from '@/lib/docs'
+import {
+  docsApi,
+  type AnswerItem,
+  type AnswerRun,
+  type AnswerStatus,
+  type CalculationView,
+  type MetricPolicyInfo,
+} from '@/lib/docs'
 import { errorLabel, formatDate, formatMs, formatUsd } from '@/lib/format'
 import { navigate } from '@/lib/router'
 import { cn } from '@/lib/utils'
@@ -21,6 +28,12 @@ const STATUS: Record<AnswerStatus, { label: string; className: string }> = {
   conflict: { label: '資料間で不一致', className: 'bg-orange-600 text-white' },
   failed: { label: '失敗', className: 'bg-destructive text-white' },
   cancelled: { label: '取消', className: 'bg-muted text-foreground' },
+}
+
+const KIND_LABELS: Record<string, string> = {
+  direct: '直接記載',
+  calculated: '資料から計算',
+  calculation_unverified: '要確認（計算できない値を含む）',
 }
 
 export function StatusBadge({ status }: { status: AnswerStatus }) {
@@ -39,7 +52,22 @@ function ItemCard({ item }: { item: AnswerItem }) {
             {item.unit && <span className="text-muted-foreground text-sm">{item.unit}</span>}
           </>
         ) : (
-          <span className="text-sm">「{item.value}」</span>
+          <span className="text-sm">
+            {item.context_before && <span className="text-muted-foreground">{item.context_before} </span>}
+            <mark className="bg-yellow-200/70 px-0.5 dark:bg-yellow-500/30">{item.value}</mark>
+            {item.context_after && <span className="text-muted-foreground"> {item.context_after}</span>}
+          </span>
+        )}
+        {item.fact && (
+          <span
+            className={cn(
+              'rounded px-1 text-[10px]',
+              item.fact.status === 'verified' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200' : 'bg-amber-100 text-amber-800',
+            )}
+            title={item.fact.issues.join('、') || '承認済み抽出版の値で、数値・単位・期を根拠から特定できました'}
+          >
+            {item.fact.status === 'verified' ? '数値検証済み' : '未検証'}
+          </span>
         )}
       </div>
       {item.kind === 'value' && (
@@ -62,6 +90,77 @@ function ItemCard({ item }: { item: AnswerItem }) {
   )
 }
 
+function PolicyNote({ policy }: { policy: MetricPolicyInfo }) {
+  return (
+    <div className="bg-muted/40 space-y-0.5 rounded p-2 text-xs">
+      <p>
+        <span className="font-medium">「{policy.name}」の定義</span>（{policy.basis_label}・版 {policy.policy_version}
+        {policy.approved_on && `・${policy.approved_on} 承認`}）
+      </p>
+      <p>{policy.description}</p>
+      {policy.items.length > 0 && <p className="text-muted-foreground">算入項目: {policy.items.join('、')}</p>}
+      {policy.basis === 'user_defined' && (
+        <p className="text-muted-foreground">これは利用者が決めた計算条件であり、資料に記載された定義ではありません。</p>
+      )}
+    </div>
+  )
+}
+
+function CalculationPanel({ c }: { c: CalculationView }) {
+  // 段階 5 の回答（計算未対応の時点の記録）には入力の一覧がない
+  if (!Array.isArray(c.inputs))
+    return <p className="text-muted-foreground text-xs">この回答は計算機能の追加前に作られたため、計算結果はありません。</p>
+  return (
+    <div className={cn('space-y-2 rounded-lg border-2 p-3', c.status === 'computed' ? 'border-emerald-500/60' : 'border-amber-400')}>
+      {c.status === 'computed' ? (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="text-muted-foreground text-xs">計算結果</span>
+          <span className="text-2xl font-semibold tabular-nums">{c.result_display}</span>
+          <span className="text-muted-foreground text-sm">{c.unit}</span>
+          <span className="text-muted-foreground font-mono text-xs">= {c.expression}</span>
+        </div>
+      ) : (
+        <p className="text-sm font-medium">検証できない値を含むため、計算結果は表示しません（{c.expression}）</p>
+      )}
+      <table className="w-full text-xs">
+        <thead className="text-muted-foreground">
+          <tr className="text-left">
+            <th className="font-normal">入力</th>
+            <th className="font-normal">項目</th>
+            <th className="font-normal">期</th>
+            <th className="text-right font-normal">原文の値</th>
+            <th className="text-right font-normal">基準単位の値</th>
+          </tr>
+        </thead>
+        <tbody>
+          {c.inputs.map((i) => (
+            <tr key={i.n} className="border-t">
+              <td className="font-mono">[{i.n}]</td>
+              <td>{i.label}</td>
+              <td className="text-muted-foreground">{i.period_label}</td>
+              <td className="text-right tabular-nums">
+                {i.raw_value} {i.unit}
+              </td>
+              <td className="text-right tabular-nums">
+                {i.normalized_value ?? '—'}
+                {i.status !== 'verified' && <span className="ml-1 text-amber-600">未検証</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {c.status === 'computed' && (
+        <p className="text-muted-foreground text-[11px]">
+          Decimal で計算（基準単位の結果 {c.result_base}
+          {c.currency && ` ${c.currency}`}）。{c.rounding?.applied ? `小数${c.rounding.places}桁に四捨五入（ROUND_HALF_UP）。` : '丸めなし。'}
+          {c.notes?.join(' ')}
+        </p>
+      )}
+      {c.policy && <PolicyNote policy={c.policy} />}
+    </div>
+  )
+}
+
 function AnswerView({ run }: { run: AnswerRun }) {
   const r = run.result
   const [showDetail, setShowDetail] = useState(false)
@@ -69,6 +168,11 @@ function AnswerView({ run }: { run: AnswerRun }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={run.status} />
+        {run.answer_kind && KIND_LABELS[run.answer_kind] && (
+          <Badge variant="outline" className="text-xs">
+            {KIND_LABELS[run.answer_kind]}
+          </Badge>
+        )}
         <span className="font-medium">{run.question}</span>
       </div>
       <div className="text-muted-foreground text-xs">
@@ -99,21 +203,29 @@ function AnswerView({ run }: { run: AnswerRun }) {
       {run.status === 'needs_clarification' && r?.clarification && (
         <Alert>
           <AlertTitle>質問の対象を確認させてください</AlertTitle>
-          <AlertDescription>{r.clarification}</AlertDescription>
-        </Alert>
-      )}
-      {r?.calculation && (
-        <Alert className="border-amber-400">
-          <AlertTitle>計算が必要な質問です（未計算）</AlertTitle>
           <AlertDescription>
-            <p>
-              [{r.calculation.claim_numbers.join('] [')}] の{r.calculation.operation === 'sum' ? '合計' : '差'}
-              が答えになります。
-            </p>
-            <p>{r.calculation.message}</p>
+            <p>{r.clarification}</p>
+            {r.policy && !r.calculation && (
+              <p className="text-muted-foreground mt-1 text-xs">
+                指標の定義は backend/metrics/ のファイルで企業ごとに設定します。
+              </p>
+            )}
           </AlertDescription>
         </Alert>
       )}
+      {r?.review_reasons && r.review_reasons.length > 0 && (
+        <Alert className="border-amber-400">
+          <AlertTitle>確認が必要な値があります</AlertTitle>
+          <AlertDescription>
+            <ul className="list-disc pl-4">
+              {r.review_reasons.map((m) => (
+                <li key={m}>{m}</li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
+      {r?.calculation && <CalculationPanel c={r.calculation} />}
       {r && r.items.length > 0 && (
         <div className="space-y-2">
           {r.items.map((it) => (

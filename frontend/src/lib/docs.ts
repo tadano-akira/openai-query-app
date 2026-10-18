@@ -184,12 +184,52 @@ export type AnswerItem = {
   issuer?: string
   period_label?: string | null
   version_id?: string
+  context_before?: string
+  context_after?: string
+  fact: { id: string; status: 'verified' | 'unverified'; unit: string | null; issues: string[] } | null
+}
+
+export type MetricPolicyInfo = {
+  metric_key: string
+  name: string
+  basis: string | null
+  basis_label: string | null
+  policy_version: string | null
+  description: string | null
+  items: string[]
+  approved_on: string | null
+}
+
+export type CalculationView = {
+  operation: 'sum' | 'subtract'
+  claim_numbers: number[]
+  expression: string
+  status: 'computed' | 'unverified'
+  inputs: {
+    n: number
+    fact_id: string | null
+    raw_value: string
+    unit: string | null
+    normalized_value: string | null
+    period_label: string | null
+    label: string | null
+    status: string
+  }[]
+  result_display?: string
+  unit?: string | null
+  result_base?: string
+  currency?: string | null
+  rounding?: { mode: string; places: number; applied: boolean }
+  notes?: string[]
+  policy: MetricPolicyInfo | null
 }
 
 export type AnswerResult = {
   answer_kind: string | null
   items: AnswerItem[]
-  calculation: { operation: 'sum' | 'subtract'; claim_numbers: number[]; status: string; message: string } | null
+  calculation: CalculationView | null
+  review_reasons?: string[]
+  policy?: MetricPolicyInfo | null
   clarification: string | null
   missing: string[]
   scope: SearchScope[]

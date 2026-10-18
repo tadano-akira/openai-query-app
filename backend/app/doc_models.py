@@ -7,6 +7,7 @@
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
@@ -448,6 +449,8 @@ class AnswerRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     timings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     langfuse_trace_id: Mapped[str | None] = mapped_column(String(64))
+    # 質問に適用した指標ポリシー（段階 6）。ポリシーのファイルが変わっても回答時点の定義を再現できる
+    metric_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -483,3 +486,67 @@ class ClaimEvidence(Base):
     # 引用範囲（原文のコードポイント、半開区間）。初期版は要素全体
     quote_start: Mapped[int] = mapped_column(Integer)
     quote_end: Mapped[int] = mapped_column(Integer)
+
+
+# ---- 段階 6: 数値の根拠（financial_facts）と計算 ------------------------------------------------
+
+FACT_STATUSES = ("verified", "unverified")
+
+
+class FinancialFact(Base):
+    """表の値のセル 1 つを数値として解釈したもの（設計書 §8.2・§8.3）。
+
+    基準値 normalized_value = 原文の数値部分（Decimal）× unit_multiplier。空欄・「—」は null（0 にしない）。
+    計算の入力にできるのは verified（承認済み抽出版・数値として解釈でき・単位と期が根拠から特定できた）だけ。
+    """
+
+    __tablename__ = "financial_facts"
+    __table_args__ = (CheckConstraint(_in("review_status", FACT_STATUSES), name="ck_financial_facts_status"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    extraction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("extractions.id"), index=True)
+    value_element_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("elements.id"), unique=True)
+    label_element_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    period_element_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    unit_element_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    raw_value: Mapped[str] = mapped_column(Text)
+    # 原文の単位での数値（例: 17,868,651 → 17868651）と、基準単位（円・人など）での値
+    display_value: Mapped[Decimal | None] = mapped_column(Numeric(38, 6))
+    normalized_value: Mapped[Decimal | None] = mapped_column(Numeric(38, 6))
+    unit_label: Mapped[str | None] = mapped_column(String(40))
+    unit_multiplier: Mapped[Decimal | None] = mapped_column(Numeric(38, 6))
+    # money / count / percent
+    quantity: Mapped[str | None] = mapped_column(String(20))
+    currency: Mapped[str | None] = mapped_column(String(10))
+    label_path: Mapped[str | None] = mapped_column(Text)
+    period_label: Mapped[str | None] = mapped_column(Text)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    scope: Mapped[str | None] = mapped_column(String(20))
+    metric_key: Mapped[str | None] = mapped_column(String(60))
+    review_status: Mapped[str] = mapped_column(String(20))
+    # unverified の理由
+    issues: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    parser_version: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Calculation(Base):
+    """回答の計算（設計書 §10.5）。式は構造化した AST で保存し、eval は使わない"""
+
+    __tablename__ = "calculations"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("answer_runs.id", ondelete="CASCADE"), index=True)
+    # 例: {"op": "sum", "args": [{"fact": "<uuid>"}, {"fact": "<uuid>"}]}
+    expression: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    input_fact_ids: Mapped[list[Any]] = mapped_column(JSONB)
+    # 基準単位での結果（例: 円）と、表示単位での結果
+    result: Mapped[Decimal] = mapped_column(Numeric(38, 6))
+    result_display: Mapped[str] = mapped_column(Text)
+    output_unit: Mapped[str | None] = mapped_column(String(40))
+    output_multiplier: Mapped[Decimal | None] = mapped_column(Numeric(38, 6))
+    currency: Mapped[str | None] = mapped_column(String(10))
+    rounding: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    # 適用した指標ポリシー（なければ質問に基づく計算）
+    policy: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

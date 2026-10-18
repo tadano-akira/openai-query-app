@@ -1,0 +1,25 @@
+{
+  "_comment": "指標ポリシー（設計書 §10.4）。企業ごとに版管理する。approved が true のものだけ計算に使い、未定義・未承認の企業は needs_clarification にする。basis は document_defined（資料記載の定義）か user_defined（利用者が決めた計算条件）。user_defined を「資料記載の定義」と表示しない。",
+  "metric_key": "interest_bearing_debt",
+  "name": "有利子負債",
+  "aliases": ["有利子負債"],
+  "policies": {
+    "7203": {
+      "policy_version": "1",
+      "basis": "user_defined",
+      "approved": true,
+      "approved_on": "2026-10-18",
+      "consolidation_scope": "consolidated",
+      "description": "連結財政状態計算書の科目「有利子負債」の、流動負債分と非流動負債分の合計。金融事業（販売金融）の借入を含む。リース負債は資料の科目の計上どおり。",
+      "operation": "sum",
+      "items": [
+        {"label": "有利子負債", "section": "流動負債"},
+        {"label": "有利子負債", "section": "非流動負債"}
+      ]
+    }
+  },
+  "default": {
+    "approved": false,
+    "clarification": "この企業の有利子負債の範囲（短期借入金・社債・長期借入金・リース負債を含むか、金融事業を含むか）がまだ決まっていません。範囲を決めてから質問してください。"
+  }
+}

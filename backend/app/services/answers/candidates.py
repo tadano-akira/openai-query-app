@@ -37,6 +37,11 @@ class Candidate:
     context_ids: list[uuid.UUID] = field(default_factory=list)
     context_texts: list[str] = field(default_factory=list)
     extraction_id: uuid.UUID | None = None
+    # 文脈の内訳（financial_facts の項目・期・単位の根拠に使う）
+    row_label_id: uuid.UUID | None = None
+    section_ids: list[uuid.UUID] = field(default_factory=list)
+    column_ids: list[uuid.UUID] = field(default_factory=list)
+    unit_id: uuid.UUID | None = None
 
     def line(self) -> str:
         if self.kind == "value":
@@ -246,6 +251,10 @@ async def build_candidates(
                             ),
                         ],
                         extraction_id=chunk.extraction_id,
+                        row_label_id=row_label[0] if row_label else None,
+                        section_ids=[s[0] for s in sections],
+                        column_ids=col_ids,
+                        unit_id=unit.id if unit else None,
                     )
                 )
         if not items:

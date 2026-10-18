@@ -127,6 +127,12 @@ def validate(
                 errors.append("計算: claim_indexes が claims の範囲外です")
             elif any(claims_in[x].get("kind") != "value" for x in idx):
                 errors.append("計算: 計算に使えるのは kind=value の主張だけです")
+            elif len(set(idx)) != len(idx):
+                errors.append("計算: claim_indexes に同じ番号が重複しています")
+            elif calc["operation"] == "subtract" and len(idx) != 2:
+                errors.append(
+                    "計算: subtract の claim_indexes はちょうど 2 つにしてください（1 番目 − 2 番目）"
+                )
 
     clarification = output["clarification"]
     if status == "candidate" and not claims_in:
