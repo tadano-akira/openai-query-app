@@ -38,6 +38,9 @@ docker compose -f langfuse/compose.yaml up -d
 
 # 4. アプリを起動（DB マイグレーションは backend 起動時に自動実行）
 docker compose up -d
+
+# 5. ログイン用アカウントを作る（パスワードは 12 文字以上、入力は表示されない）
+docker compose exec backend python -m app.cli create-user you@example.com
 ```
 
 | 用途 | URL |
@@ -47,6 +50,23 @@ docker compose up -d
 | Langfuse | http://localhost:3000 （ログイン情報は `langfuse/.env` の `LANGFUSE_INIT_USER_*`） |
 
 ポートはすべて 127.0.0.1 にバインドしている。
+
+## ログイン
+
+アプリはメールアドレス＋パスワードでログインして使う（利用者は本人 1 名の想定）。画面からの新規登録はない。
+
+```powershell
+docker compose exec backend python -m app.cli create-user you@example.com   # 作成
+docker compose exec backend python -m app.cli set-password you@example.com  # 変更（全端末をログアウト）
+docker compose exec backend python -m app.cli logout-all you@example.com    # 全端末をログアウト
+docker compose exec backend python -m app.cli list-users                    # 一覧
+```
+
+- パスワードは Argon2 のハッシュだけを保存する。12 文字以上。
+- ログイン状態は Cookie（HttpOnly、SameSite=Lax）で保持し、最後に使ってから 30 日で切れる。DB にはトークンの SHA-256 だけを保存する。
+- 5 回続けて失敗すると 15 分ロックする。パスワード違いと未登録のメールアドレスは区別しない。
+- 更新系 API はヘッダー `X-OQA-Request: 1` が必須（他サイトからの送信を拒否する）。
+- HTTPS で配信するとき（t430）は `.env` に `COOKIE_SECURE=true` を設定する。外部公開時は Cloudflare Access を併用する。
 
 ## 開発
 
@@ -137,6 +157,9 @@ reasoning_effort: low          # 任意: minimal / low / medium / high
 | `DAILY_COST_LIMIT_USD` | `3.0` | 1日の推定利用額上限（0 で無制限） |
 | `MONTHLY_COST_LIMIT_USD` | `30.0` | 1か月の推定利用額上限（0 で無制限） |
 | `USAGE_TIMEZONE` | `Asia/Tokyo` | 1日・1か月の区切り |
+| `SESSION_DAYS` | `30` | 最後に使ってからログイン状態が切れるまでの日数 |
+| `COOKIE_SECURE` | `false` | `true` で Cookie を HTTPS 限定にする（HTTPS 配信時は必須） |
+| `LOGIN_MAX_FAILURES` / `LOGIN_LOCK_MINUTES` | `5` / `15` | 連続失敗回数とロック時間 |
 | `LANGFUSE_BASE_URL` | `http://host.docker.internal:3000` | コンテナからの送信先 |
 | `LANGFUSE_PUBLIC_URL` | `http://localhost:3000` | ブラウザ用リンク |
 

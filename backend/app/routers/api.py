@@ -3,13 +3,14 @@ import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.db import get_session
 from app.models import ApiCall, Conversation, Message, Run, Turn
+from app.routers.auth import current_user, require_csrf_header
 from app.schemas import (
     CharacterOut,
     ClientMetrics,
@@ -36,7 +37,8 @@ from app.services.serializers import conversation_stats, run_to_detail, run_to_o
 from app.services.tracing import Tracer
 from app.services.usage import usage_summary
 
-router = APIRouter()
+# ここに定義する API はすべてログイン必須（ログイン・ヘルスチェックは routers/auth.py）
+router = APIRouter(dependencies=[Depends(require_csrf_header), Depends(current_user)])
 
 
 def chat_service(request: Request) -> ChatService:
@@ -45,15 +47,6 @@ def chat_service(request: Request) -> ChatService:
 
 def tracer(request: Request) -> Tracer:
     return request.app.state.tracer
-
-
-@router.get("/api/health")
-async def health(session: AsyncSession = Depends(get_session)):
-    try:
-        await session.execute(text("SELECT 1"))
-    except Exception as e:
-        raise HTTPException(503, detail={"code": "db_error", "message": "DB に接続できません"}) from e
-    return {"status": "ok"}
 
 
 NOT_FOUND = {"code": "not_found", "message": "会話が見つかりません"}

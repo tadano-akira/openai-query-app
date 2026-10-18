@@ -12,6 +12,7 @@ dependencies = [
     "openai==3.29.0",
     "langfuse==4.17.0",
     "httpx",
+    "argon2-cffi==25.1.0",
 ]
 
 [dependency-groups]

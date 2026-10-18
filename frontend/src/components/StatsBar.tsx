@@ -17,7 +17,7 @@ export function StatsBar({ stats }: { stats: ConversationStats }) {
       ? `取得済み分の合計・不明 ${stats.unknown_usage_call_count}件`
       : `入力 ${stats.input_tokens.toLocaleString()} / 出力 ${stats.output_tokens.toLocaleString()}`
   return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-2 border-t px-4 py-2 sm:grid-cols-3 lg:grid-cols-7">
+    <div id="stats-bar" className="grid grid-cols-2 gap-x-6 gap-y-2 border-t px-4 py-2 sm:grid-cols-3 lg:grid-cols-7">
       <Stat
         label="実行回数"
         value={`${stats.run_count}`}

@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # 「1日」「1か月」の区切りに使うタイムゾーン
     usage_timezone: str = "Asia/Tokyo"
 
+    # ログイン（メールアドレス＋パスワード、利用者は 1 人。アカウントは python -m app.cli で作る）
+    # 最後に使ってからこの日数でログイン状態が切れる
+    session_days: int = 30
+    # HTTPS で配信するとき（t430）は true にして Cookie を HTTPS 限定にする
+    cookie_secure: bool = False
+    # 連続でこの回数失敗すると、login_lock_minutes 分ログインできなくする
+    login_max_failures: int = 5
+    login_lock_minutes: int = 15
+
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_base_url: str = "http://host.docker.internal:3000"

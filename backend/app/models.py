@@ -30,6 +30,37 @@ class RunStatus:
     INTERRUPTED = "interrupted"
 
 
+class User(Base):
+    """ログインできる利用者（当面は本人 1 名）。パスワードは Argon2 のハッシュだけを保存する"""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # 小文字に正規化して保存する
+    email: Mapped[str] = mapped_column(String(254), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 連続失敗回数と、ロック解除日時（総当たり対策）
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSession(Base):
+    """ログイン状態。Cookie のトークンそのものではなく SHA-256 だけを保存する（DB が漏れても乗っ取れない）"""
+
+    __tablename__ = "auth_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300))
+
+    user: Mapped[User] = relationship()
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, MessageSquarePlus, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { ChevronDown, ChevronUp, Loader2, MessageSquarePlus, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { AssistantFrame, CharacterPanel } from '@/components/AssistantFrame'
@@ -15,15 +15,26 @@ import { ApiError, api, type Run, type Turn } from '@/lib/api'
 import { errorLabel, formatMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-const SIDEBAR_KEY = 'oqa.sidebarOpen'
-
-/** サイドバーの開閉は閲覧者ごとの表示設定としてブラウザに保存する（読めなければ開いた状態） */
-function initialSidebarOpen(): boolean {
-  try {
-    return localStorage.getItem(SIDEBAR_KEY) !== 'false'
-  } catch {
-    return true
-  }
+/**
+ * 開閉などの表示設定。閲覧者ごとの設定としてブラウザに保存する（読み書きできなければ既定値のまま動く）
+ */
+function usePersistentFlag(key: string, initial = true): [boolean, (update: (v: boolean) => boolean) => void] {
+  const [value, setValue] = useState(() => {
+    try {
+      const saved = localStorage.getItem(key)
+      return saved === null ? initial : saved === 'true'
+    } catch {
+      return initial
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, String(value))
+    } catch {
+      // 保存できなくても表示には影響しない
+    }
+  }, [key, value])
+  return [value, setValue]
 }
 
 function initialConversationId(): string | null {
@@ -89,7 +100,8 @@ export default function App() {
   const [error, setError] = useState<{ title: string; message: string } | null>(null)
   const [creating, setCreating] = useState(false)
   const [detailRunId, setDetailRunId] = useState<string | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen)
+  const [sidebarOpen, setSidebarOpen] = usePersistentFlag('oqa.sidebarOpen')
+  const [statsOpen, setStatsOpen] = usePersistentFlag('oqa.statsOpen')
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const models = useQuery({ queryKey: ['models'], queryFn: api.listModels, staleTime: Infinity })
@@ -108,14 +120,6 @@ export default function App() {
     window.history.replaceState(null, '', url)
   }, [selectedId])
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(SIDEBAR_KEY, String(sidebarOpen))
-    } catch {
-      // 保存できなくても表示には影響しない
-    }
-  }, [sidebarOpen])
-
   // Ctrl+B（Mac は ⌘+B）でサイドバーを開閉する
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -126,7 +130,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [setSidebarOpen])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -260,18 +264,33 @@ export default function App() {
               )}
               <h1 className="ml-1 truncate text-sm font-semibold">{data?.title ?? '新規チャット'}</h1>
             </div>
-            {data && data.models.length > 0 && (
+            {data && (
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-                <span className="text-muted-foreground text-xs">使用モデル</span>
-                {data.models.map((m) => (
-                  <Badge key={m} variant="outline" className="font-mono">
-                    {m}
-                  </Badge>
-                ))}
+                {data.models.length > 0 && (
+                  <>
+                    <span className="text-muted-foreground text-xs">使用モデル</span>
+                    {data.models.map((m) => (
+                      <Badge key={m} variant="outline" className="font-mono">
+                        {m}
+                      </Badge>
+                    ))}
+                  </>
+                )}
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="text-muted-foreground ml-1"
+                  onClick={() => setStatsOpen((o) => !o)}
+                  aria-expanded={statsOpen}
+                  aria-controls="stats-bar"
+                  title={statsOpen ? '計測値を隠す' : '計測値を表示'}
+                >
+                  計測値 {statsOpen ? <ChevronUp /> : <ChevronDown />}
+                </Button>
               </div>
             )}
           </div>
-          {data && <StatsBar stats={data.stats} />}
+          {data && statsOpen && <StatsBar stats={data.stats} />}
         </header>
 
         {/* チャット欄と、その右の立ち絵（画面幅が広いときだけ表示） */}

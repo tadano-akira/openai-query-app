@@ -185,16 +185,25 @@ export class ApiError extends Error {
   }
 }
 
+let unauthorizedHandler: (() => void) | null = null
+
+/** ログインの期限切れなどで 401 が返ったときの処理（ログイン画面へ戻す）を登録する */
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
     res = await fetch(path, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      // X-OQA-Request は更新系 API に必須（他サイトからの送信を拒否するため）
+      headers: { 'Content-Type': 'application/json', 'X-OQA-Request': '1', ...(init?.headers ?? {}) },
     })
   } catch {
     throw new ApiError(0, 'network_error', 'バックエンドに接続できません')
   }
+  if (res.status === 401 && !path.startsWith('/api/v1/auth/')) unauthorizedHandler?.()
   if (res.status === 204) return undefined as T
   const body = await res.json().catch(() => null)
   if (!res.ok) {
@@ -211,7 +220,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+export type Me = { email: string }
+
 export const api = {
+  me: () => request<Me>('/api/v1/auth/me'),
+  login: (email: string, password: string) =>
+    request<Me>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   getUsage: () => request<UsageSummary>('/api/v1/usage'),
   getCharacter: () => request<{ name: string; avatar_url: string | null; portrait_url: string | null }>('/api/v1/character'),
   listModes: () => request<{ modes: Mode[]; default: string }>('/api/v1/modes'),
