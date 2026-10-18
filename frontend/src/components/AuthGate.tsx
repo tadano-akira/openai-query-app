@@ -3,12 +3,14 @@ import { Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import App from '@/App'
+import { DocsApp } from '@/components/docs/DocsApp'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ApiError, api, setUnauthorizedHandler } from '@/lib/api'
 import { meQuery, resetToLoggedOut } from '@/lib/auth'
+import { useLocation } from '@/lib/router'
 
 function LoginPage() {
   const queryClient = useQueryClient()
@@ -81,6 +83,7 @@ function LoginPage() {
 export function AuthGate() {
   const queryClient = useQueryClient()
   const me = useQuery(meQuery)
+  const { path } = useLocation()
 
   useEffect(() => {
     // 期限切れなどで API が 401 を返したら、画面のデータを消してログイン画面へ戻す
@@ -110,5 +113,6 @@ export function AuthGate() {
       </div>
     )
   }
-  return me.data ? <App /> : <LoginPage />
+  if (!me.data) return <LoginPage />
+  return path.startsWith('/docs') || path.startsWith('/viewer/') ? <DocsApp /> : <App />
 }

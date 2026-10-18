@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     # Presidio に接続できないとき true なら検査なしで送る。既定は安全側（送信を止める）
     secret_scan_fail_open: bool = False
 
+    # 資料Q&A（PDF）。原本と抽出成果物の保存先（backend と worker で同じ volume を使う）
+    pdf_storage_root: str = "/data"
+    max_pdf_bytes: int = 50 * 1024 * 1024
+    max_pdf_pages: int = 500
+    # 1 文書の解析にかけられる時間。超えたら解析プロセスを止めて失敗にする
+    parser_timeout_seconds: int = 600
+    worker_poll_seconds: float = 2.0
+    # ジョブの lease（ワーカーが落ちたら期限切れ後に再取得される）と heartbeat 間隔
+    job_lease_seconds: int = 90
+    job_heartbeat_seconds: int = 15
+    job_max_attempts: int = 2
+
     # ログイン（メールアドレス＋パスワード、利用者は 1 人。アカウントは python -m app.cli で作る）
     # 最後に使ってからこの日数でログイン状態が切れる
     session_days: int = 30

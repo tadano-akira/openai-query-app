@@ -1,12 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { LogOut, MessageSquarePlus, Trash2 } from 'lucide-react'
+import { MessageSquarePlus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { AccountBar } from '@/components/AccountBar'
+import { AppNav } from '@/components/AppNav'
 import { UsagePanel } from '@/components/UsagePanel'
 import { ApiError, api, type ConversationSummary } from '@/lib/api'
-import { meQuery, useLogout } from '@/lib/auth'
 import { formatDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -53,7 +54,8 @@ export function ConversationSidebar({
 
   return (
     <aside className="bg-muted/30 flex h-full w-72 shrink-0 flex-col border-r">
-      <div className="p-3">
+      <div className="space-y-2 p-3">
+        <AppNav current="chat" />
         <Button className="w-full justify-start" variant="outline" onClick={onNew} disabled={creating}>
           <MessageSquarePlus /> 新規チャット
         </Button>
@@ -118,22 +120,5 @@ export function ConversationSidebar({
       <UsagePanel />
       <AccountBar />
     </aside>
-  )
-}
-
-/** ログイン中のアカウントとログアウト */
-function AccountBar() {
-  const { data: me } = useQuery(meQuery)
-  const logout = useLogout()
-  if (!me) return null
-  return (
-    <div className="flex items-center justify-between gap-2 border-t px-3 py-2">
-      <span className="text-muted-foreground truncate text-xs" title={me.email}>
-        {me.email}
-      </span>
-      <Button variant="ghost" size="xs" className="shrink-0" onClick={() => void logout()}>
-        <LogOut /> ログアウト
-      </Button>
-    </div>
   )
 }

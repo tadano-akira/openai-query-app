@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.routers import auth as auth_routes
 from app.routers.api import router
+from app.routers.documents import router as documents_router
 from app.services.chat import ChatService, mark_interrupted_runs
 from app.services.pricing import PRICES
 from app.services.prompts import PromptError, load_base, load_modes
@@ -43,3 +44,4 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="OpenAI Query App", version="0.1.0", lifespan=lifespan)
 app.include_router(auth_routes.router)
 app.include_router(router)
+app.include_router(documents_router)

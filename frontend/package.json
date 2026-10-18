@@ -16,6 +16,7 @@
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
     "lucide-react": "^1.55.0",
+    "pdfjs-dist": "6.3.289",
     "radix-ui": "^1.8.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

@@ -4,7 +4,7 @@ from logging.config import fileConfig
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
-from app import models  # noqa: F401  モデルを登録する
+from app import doc_models, models  # noqa: F401  モデルを登録する
 from app.config import get_settings
 from app.db import Base
 

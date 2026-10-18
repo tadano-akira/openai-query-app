@@ -197,13 +197,18 @@ export function setUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
     res = await fetch(path, {
       ...init,
       // X-OQA-Request は更新系 API に必須（他サイトからの送信を拒否するため）
-      headers: { 'Content-Type': 'application/json', 'X-OQA-Request': '1', ...(init?.headers ?? {}) },
+      // FormData（ファイルのアップロード）は境界つきの Content-Type をブラウザに付けさせる
+      headers: {
+        ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        'X-OQA-Request': '1',
+        ...(init?.headers ?? {}),
+      },
     })
   } catch {
     throw new ApiError(0, 'network_error', 'バックエンドに接続できません')

@@ -4,6 +4,7 @@
 #   1. pg_dump（custom 形式、DB コンテナ内で実行）でアプリ DB と Langfuse の Postgres を取得
 #   2. 空でないこと・pg_restore --list で読めることを確認
 #   3. .env と langfuse/.env を tar にまとめる（Langfuse の ENCRYPTION_KEY 等がないと復元しても使えないため）
+#      資料Q&A の原本 PDF（pdf_data volume の originals/）も tar にまとめる（DB が原本ファイルを参照するため）
 #   4. 平文の SHA-256 を記録し、各ファイルを age 公開鍵で暗号化（復号鍵はサーバーに置かない）
 #   5. Cloudflare R2 の <R2_PREFIX>/<STAMP>/ へアップロードしてサイズを確認
 #   6. BACKUP_RETENTION_DAYS より古い世代を R2 から削除（バケットは他システムと共用のため、
@@ -70,13 +71,17 @@ dump "${APP[@]}" -- db app app "$WORKDIR/app.dump"
 echo "[2/6] pg_dump: Langfuse Postgres"
 dump "${LANGFUSE[@]}" -- postgres postgres postgres "$WORKDIR/langfuse.dump"
 
-echo "[3/6] .env 類"
+echo "[3/6] .env 類・原本 PDF"
 tar -C "$ROOT" -cf "$WORKDIR/env.tar" .env langfuse/.env
+# 原本はファイル名が内容の SHA-256 なので、復元時に改ざん・破損を検査できる
+"${APP[@]}" exec -T backend sh -c 'mkdir -p /data/originals && tar -C /data -cf - originals' > "$WORKDIR/pdfs.tar"
+test -s "$WORKDIR/pdfs.tar"
 
 echo "[4/6] SHA-256 と暗号化 (age)"
-(cd "$WORKDIR" && sha256sum app.dump langfuse.dump env.tar > SHA256SUMS)
+FILES=(app.dump langfuse.dump env.tar pdfs.tar)
+(cd "$WORKDIR" && sha256sum "${FILES[@]}" > SHA256SUMS)
 mkdir -p "$WORKDIR/out"
-for f in app.dump langfuse.dump env.tar; do
+for f in "${FILES[@]}"; do
   age -r "$BACKUP_PUBLIC_KEY" -o "$WORKDIR/out/$f.age" "$WORKDIR/$f"
 done
 cp "$WORKDIR/SHA256SUMS" "$WORKDIR/out/"
@@ -95,7 +100,7 @@ DEST="s3://${R2_BUCKET}/${R2_PREFIX}/${STAMP}/"
 echo "[5/6] R2 アップロード: ${DEST}"
 aws s3 cp "$WORKDIR/out/" "$DEST" --recursive --endpoint-url "$R2_ENDPOINT"
 uploaded="$(aws s3 ls "$DEST" --endpoint-url "$R2_ENDPOINT" | wc -l)"
-if [[ "$uploaded" -ne 4 ]]; then
+if [[ "$uploaded" -ne $((${#FILES[@]} + 1)) ]]; then
   echo "アップロード後のファイル数が想定と異なります: $uploaded" >&2
   exit 1
 fi

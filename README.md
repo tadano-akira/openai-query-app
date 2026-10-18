@@ -16,7 +16,7 @@ ChatGPT 風のチャット UI から OpenAI Responses API（Web 検索ツール�
 | 実行環境 | Windows + Docker Desktop（ソースは Windows 側、コンテナは Linux） |
 
 ```
-compose.yaml          アプリ一式（db / backend / presidio / frontend）
+compose.yaml          アプリ一式（db / backend / worker / presidio / frontend）
 langfuse/compose.yaml Langfuse 一式（web / worker / postgres / clickhouse / redis / minio）
 backend/              FastAPI アプリ・Alembic・テスト
 frontend/             React アプリ
@@ -82,6 +82,29 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 - Windows のバインドマウントは変更通知が届かないため、uvicorn / Vite ともポーリングで変更を検知する。
 - `node_modules` と Python venv は named volume に置いている。依存を変えたら
   `docker compose restart frontend` / `docker compose up -d --build backend`。
+
+## 資料Q&A（PDF 根拠提示型 RAG、段階 1〜3）
+
+画面左上の「資料Q&A」で、公式の決算資料 PDF を登録・解析・レビューし、根拠を原本上でハイライト表示する。
+設計は [docs/PDF_Evidence_RAG_System_Design.md](docs/PDF_Evidence_RAG_System_Design.md)（v1.2）に従う。今回は段階 1〜3（登録・抽出・レビュー・ハイライト）で、
+検索と引用つき回答（段階 4 以降）はまだない。OCR は使わない。
+
+1. **PDFを登録**: 企業（証券コード）・資料名・種別・対象期・連結区分・公表日・公式の掲載元 URL を入力してアップロードする。
+   原本は内容の SHA-256 をキーに `pdf_data` volume へそのまま保存する（元のファイル名は使わない）。同じ企業に同じ PDF は登録できない。
+2. **解析**: `worker` コンテナが PyMuPDF で文字・行・座標・表を抽出する（子プロセス、10 分で打ち切り、1 並列）。
+   暗号化 PDF は拒否、全ページが画像だけなら「文字抽出不可」。再解析は新しい抽出版を作り、旧抽出版と根拠 ID は変えない。
+3. **公式性の確認**: 版の詳細画面で掲載元 URL と内容を確認して「確認済み」にする（監査記録に残る）。
+4. **レビュー・承認**: 原本と抽出結果を並べ、行・セルを選ぶと両側で強調する。セルの見出し（項目・期）は自動推定。
+   承認後に「既定にする」と、その抽出版が今後の検索対象になる。
+5. **根拠の表示**: `/viewer/evidence/{根拠ID}` で原本の該当ページを開き、値を黄色・見出しを青で強調する（PDF / HTML 切替）。
+
+- 座標は PDF user space（CropBox ∩ MediaBox 基準）で保存し、PDF.js の viewport で回転・トリミング・拡大率を反映する。
+  回転 0/90/180/270・CropBox・MediaBox 原点ずれ・横長で自動テスト済み。
+- 回転したページの表は、検出のときだけ回転を外して抽出する（PyMuPDF の表検出は回転後の向きで動くため）。
+- 表の列見出しは、上から金額らしい値が出るまでの行（最大 3 行）とみなす。行見出しは 1 列目。
+- PDF.js の文字コード対応表・標準フォントは `/pdfjs/` からアプリ自身が配信する（外部 CDN を使わない）。
+- 原本 PDF はバックアップ（`pdfs.tar`）に含め、復元テストでファイル名（SHA-256）と内容の一致を確かめる。
+- PyMuPDF は AGPL-3.0。非公開・個人利用の現在の形態では問題ないが、配布・サービス提供する場合は再確認する。
 
 ## 送信前の機密情報検知（Presidio）
 
@@ -190,6 +213,8 @@ reasoning_effort: low          # 任意: minimal / low / medium / high
 | `PRESIDIO_URL` | `http://presidio:3000` | Presidio Analyzer の URL |
 | `SECRET_SCAN_MIN_SCORE` | `0.5` | この確からしさ以上をブロック |
 | `SECRET_SCAN_FAIL_OPEN` | `false` | Presidio 停止時に検査なしで送るか |
+| `MAX_PDF_BYTES` / `MAX_PDF_PAGES` | `52428800` / `500` | 資料Q&A の PDF の上限 |
+| `PARSER_TIMEOUT_SECONDS` | `600` | 1 文書の解析時間の上限 |
 | `SESSION_DAYS` | `30` | 最後に使ってからログイン状態が切れるまでの日数 |
 | `COOKIE_SECURE` | `false` | `true` で Cookie を HTTPS 限定にする（HTTPS 配信時は必須） |
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCK_MINUTES` | `5` / `15` | 連続失敗回数とロック時間 |

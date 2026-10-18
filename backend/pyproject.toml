@@ -13,6 +13,8 @@ dependencies = [
     "langfuse==4.17.0",
     "httpx",
     "argon2-cffi==25.1.0",
+    "pymupdf==1.28.2",
+    "python-multipart==0.0.32",
 ]
 
 [dependency-groups]

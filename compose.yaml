@@ -50,8 +50,34 @@ services:
     volumes:
       - ./backend:/app
       - backend_venv:/opt/venv
+      - pdf_data:/data
     extra_hosts:
       - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging: *logging
+
+  # 資料Q&A のバックグラウンドワーカー（PDF 解析）。backend が依存の同期とマイグレーションを終えてから起動する
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:?}@db:5432/app
+    command: python -m app.worker
+    volumes:
+      - ./backend:/app
+      - backend_venv:/opt/venv
+      - pdf_data:/data
+    # 解析は 1 並列。大きな PDF でホスト全体を圧迫しないよう上限を設ける
+    mem_limit: 1536m
     logging: *logging
 
   # 送信前の機密情報検知（Microsoft Presidio Analyzer）。ホストへは公開せず backend からのみ使う
@@ -85,5 +111,7 @@ services:
 
 volumes:
   db_data:
+  # 原本 PDF と抽出成果物（バックアップ対象）
+  pdf_data:
   backend_venv:
   frontend_node_modules:

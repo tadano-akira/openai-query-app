@@ -2,7 +2,7 @@
 # バックアップ 1 世代を復号し、一時 DB へ復元できることを確認する（本番 DB には触れない）。
 #
 #   1. age 秘密鍵で復号し、SHA256SUMS と照合
-#   2. env.tar に .env / langfuse/.env が含まれることを確認
+#   2. env.tar に .env / langfuse/.env が含まれること、原本 PDF のファイル名（SHA-256）と内容が一致することを確認
 #   3. アプリ DB・Langfuse Postgres をそれぞれ一時 DB へ pg_restore し、主要テーブルの件数を稼働中の DB と並べて表示
 #   4. 一時 DB を削除
 #
@@ -34,7 +34,10 @@ grep -o 'AGE-SECRET-KEY-[0-9A-Z]*' "$IDENTITY" > "$WORKDIR/identity" || {
   echo "age 秘密鍵が見つかりません: $IDENTITY" >&2
   exit 1
 }
-for f in app.dump langfuse.dump env.tar; do
+FILES=(app.dump langfuse.dump env.tar)
+# 資料Q&A 導入前の世代には pdfs.tar がない
+[[ -f "$SRC/pdfs.tar.age" ]] && FILES+=(pdfs.tar)
+for f in "${FILES[@]}"; do
   age -d -i "$WORKDIR/identity" -o "$WORKDIR/$f" "$SRC/$f.age"
 done
 cp "$SRC/SHA256SUMS" "$WORKDIR/"
@@ -72,9 +75,25 @@ compare() { # <label> <live> <restored>
     awk '{ printf "    %-14s 稼働中 %6s / 復元 %6s\n", $1, $2, $3 }'
 }
 
+if [[ -f "$WORKDIR/pdfs.tar" ]]; then
+  mkdir -p "$WORKDIR/pdfs"
+  tar -C "$WORKDIR/pdfs" -xf "$WORKDIR/pdfs.tar"
+  n=0
+  while IFS= read -r -d '' f; do
+    name="$(basename "$f" .pdf)"
+    actual="$(sha256sum "$f" | cut -d' ' -f1)"
+    if [[ "$name" != "$actual" ]]; then
+      echo "  原本 PDF のハッシュが一致しません: $f" >&2
+      exit 1
+    fi
+    n=$((n + 1))
+  done < <(find "$WORKDIR/pdfs" -type f -name '*.pdf' -print0)
+  echo "  原本 PDF ${n} 件の SHA-256 が一致"
+fi
+
 echo "[3/4] 一時 DB へ復元"
 restore "${APP[@]}" -- db app "$WORKDIR/app.dump"
-APP_TABLES=(conversations turns messages runs api_calls)
+APP_TABLES=(conversations turns messages runs api_calls documents document_versions extractions pages elements)
 compare "アプリ DB" \
   "$(counts "${APP[@]}" -- db app app "${APP_TABLES[@]}")" \
   "$(counts "${APP[@]}" -- db app "$CHECK_DB" "${APP_TABLES[@]}")"
