@@ -47,6 +47,16 @@ OFFICIAL_STATUSES = ("unconfirmed", "confirmed", "rejected")
 # 抽出処理の状態
 EXTRACTION_STATUSES = ("queued", "running", "succeeded", "failed")
 # 抽出結果の品質（自動判定。正確性の証明ではない）
+ANSWER_STATUSES = (
+    "running",
+    "completed",
+    "insufficient_evidence",
+    "needs_clarification",
+    "needs_review",
+    "conflict",
+    "failed",
+    "cancelled",
+)
 INDEX_STATUSES = ("none", "queued", "running", "ready", "failed")
 CHUNK_KINDS = ("text", "table")
 EXTRACTION_QUALITIES = ("ok", "needs_review", "partial", "unsupported_no_text")
@@ -403,4 +413,73 @@ class LlmCall(Base):
     error_code: Mapped[str | None] = mapped_column(String(60))
     extraction_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("extractions.id", ondelete="SET NULL"))
     search_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("search_runs.id", ondelete="SET NULL"))
+    answer_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("answer_runs.id", ondelete="SET NULL"))
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+# ---- 段階 5: 根拠の選択・検証・回答 ------------------------------------------------------------
+
+
+class AnswerRun(Base):
+    """質問 1 回の回答。検索結果・LLM に渡した候補（run 内 ID の対応表）・検証結果・回答を固定して残す"""
+
+    __tablename__ = "answer_runs"
+    __table_args__ = (CheckConstraint(_in("status", ANSWER_STATUSES), name="ck_answer_runs_status"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    question: Mapped[str] = mapped_column(Text)
+    search_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("search_runs.id", ondelete="SET NULL"))
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(30))
+    # direct（資料の直接記載）/ calculation_pending（計算が必要。段階 6 で対応）/ none
+    answer_kind: Mapped[str | None] = mapped_column(String(30))
+    # 現在の処理段階（scope_resolution → retrieval → evidence_selection → validation → rendering）
+    stage: Mapped[str] = mapped_column(String(30))
+    # run 内 ID（E1…）→ 要素 ID と、LLM に渡した候補の内容
+    candidates: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # 検証済みの LLM 出力（試行ごと）と検証エラー
+    llm_outputs: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    validation_errors: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # サーバーが原文から組み立てた回答（画面表示用）
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(String(60))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    timings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    langfuse_trace_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    claims: Mapped[list["Claim"]] = relationship(order_by="Claim.seq", cascade="all, delete-orphan")
+
+
+class Claim(Base):
+    """検証可能な 1 つの主張（1 つの値または 1 つの記載）"""
+
+    __tablename__ = "claims"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("answer_runs.id", ondelete="CASCADE"), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    # value（数値の記載）/ text（文章の記載）
+    kind: Mapped[str] = mapped_column(String(10))
+    # LLM の短い説明（値そのものはここに書かせない。数字は根拠の見出しにあるものだけ許す）
+    note: Mapped[str] = mapped_column(Text)
+    # quoted（承認済み抽出版の原文をそのまま引用。数値の突合は段階 6 の financial_facts で行う）
+    verification_status: Mapped[str] = mapped_column(String(20))
+
+    evidence: Mapped[list["ClaimEvidence"]] = relationship(cascade="all, delete-orphan")
+
+
+class ClaimEvidence(Base):
+    """主張と原文の対応。role は value（値・本文）/ context（行・列見出し、単位、表題）"""
+
+    __tablename__ = "claim_evidence"
+
+    claim_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("claims.id", ondelete="CASCADE"), primary_key=True)
+    element_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("elements.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20))
+    # 引用範囲（原文のコードポイント、半開区間）。初期版は要素全体
+    quote_start: Mapped[int] = mapped_column(Integer)
+    quote_end: Mapped[int] = mapped_column(Integer)

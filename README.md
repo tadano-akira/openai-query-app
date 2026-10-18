@@ -83,11 +83,11 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 - `node_modules` と Python venv は named volume に置いている。依存を変えたら
   `docker compose restart frontend` / `docker compose up -d --build backend`。
 
-## 資料Q&A（PDF 根拠提示型 RAG、段階 1〜4）
+## 資料Q&A（PDF 根拠提示型 RAG、段階 1〜5）
 
 画面左上の「資料Q&A」で、公式の決算資料 PDF を登録・解析・レビューし、根拠を原本上でハイライト表示する。
 設計は [docs/PDF_Evidence_RAG_System_Design.md](docs/PDF_Evidence_RAG_System_Design.md)（v1.2）に従う。今回は段階 1〜3（登録・抽出・レビュー・ハイライト）で、
-段階 4（検索）まで実装済みで、引用つきの回答生成（段階 5 以降）はまだない。OCR は使わない。
+段階 4（検索）・段階 5（根拠を選ぶ回答と検証）まで実装済み。計算（段階 6）以降はまだない。OCR は使わない。
 
 1. **PDFを登録**: 企業（証券コード）・資料名・種別・対象期・連結区分・公表日・公式の掲載元 URL を入力してアップロードする。
    原本は内容の SHA-256 をキーに `pdf_data` volume へそのまま保存する（元のファイル名は使わない）。同じ企業に同じ PDF は登録できない。
@@ -120,8 +120,29 @@ docker compose exec frontend npm run build           # 型チェック + ビル�
 - 質問は埋め込みのため OpenAI へ送るので、チャットと同じ機密情報検知・利用上限を通す。埋め込みの推定料金は利用状況（1 日・1 か月の金額）に含める。
 - 検索ごとに対象の抽出版（スコープ）と順位を `search_runs` / `retrieval_hits` に記録する。
 - 評価: `docker compose exec backend python -m app.cli eval-search search/eval/toyota_2027q1.json`
-  （18 問。2026-10-18 時点で Recall@12 = 100%、MRR = 0.850。設計書の目標は Recall@12 ≥ 95%）。
+  （20 問。2026-10-18 時点で Recall@12 = 100%、MRR = 0.818。設計書の目標は Recall@12 ≥ 95%）。
+- 字句検索の類似度（pg_trgm）は、IDF の低い語（会社名など、ほとんどのチャンクに出る語）を除いた質問の語で測る。
+  質問全体で測ると「トヨタの営業利益は？」のような短い質問が「トヨタ」を含む本文に引っ張られるため。
 - DB のイメージは pgvector 入り（`pgvector/pgvector:0.8.6-pg17-trixie`。公式 postgres:17 と同じ Debian 13 で、データはそのまま使える）。
+
+### 回答（段階 5）
+
+8. **質問する**（`/docs/answer`）: 質問・企業の絞り込み・モデルを指定して送る。処理は次の順で、各段階を `answer_runs` に記録する。
+   1. 対象企業の解決: 質問中の企業名（`backend/search/companies.json` の別名と登録企業名）で検索対象を絞る。
+      資料が登録されていない企業（例: ホンダ）を問われたら、検索も LLM も呼ばずに「根拠不足」で返す。
+      企業名がなく検索対象に複数企業がある場合は「確認が必要」で返す。
+   2. 検索（段階 4）。ヒットした表が複数チャンクに分かれている場合は、同じ表の別チャンクで質問の語を含むものも候補に足す
+      （例: 有利子負債は流動負債・非流動負債の両方に行がある）。
+   3. 根拠の選択: 候補（表の値のセル・本文の行）に run 内だけの ID（E1…）を振り、行見出し・区分・列見出し・単位・資料名を添えて LLM に渡す。
+      LLM は strict JSON schema で「ID・種類・短い説明」と計算の要否だけを返す。値・金額は書かせない。指示は `backend/search/answer_instructions.md`。
+   4. 検証: 候補にない ID、重複、表の値でないものを数値として選ぶ、説明に根拠の見出しにない数字（金額など）を書く、
+      根拠なしの回答、計算対象の番号の誤り、などがあれば出力ごと不採用にし、理由を添えて 1 回だけ作り直させる。それでも不合格なら「失敗」。
+   5. 表示: 値・単位・行列見出し・ページはサーバーが承認済み抽出版の原文から組み立てる。各値から `/viewer/evidence/{根拠ID}` で原本を開ける。
+- 状態: 回答（completed）／要確認（needs_review: 合算などの計算が必要。計算は段階 6 で対応し、今は個々の値と根拠だけを示す）／
+  根拠不足（insufficient_evidence）／確認が必要（needs_clarification）／失敗（failed）。
+- 回答の主張は `claims`、根拠との対応（値と、文脈として行・列見出し・単位・表題）は `claim_evidence` に残す。
+- LLM の呼び出しは `llm_calls`（purpose `answer_selection`）に推定料金つきで記録し、利用上限に含める。Langfuse には `doc-answer` トレースとして送る。
+- 実測（gpt-5.5、トヨタ 1Q 短信）: 1 問あたり約 4〜10 秒、推定 $0.03〜0.06。
 
 ## 送信前の機密情報検知（Presidio）
 

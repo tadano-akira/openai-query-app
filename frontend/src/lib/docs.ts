@@ -148,11 +148,84 @@ export type SearchHit = {
   evidence: { element_id: string; role: string; text: string }[]
 }
 
+export type SearchScope = {
+  extraction_id: string
+  version_id: string
+  title: string
+  issuer: string
+  period_label: string | null
+  issuer_id?: string
+}
+
+export type AnswerStatus =
+  | 'running'
+  | 'completed'
+  | 'insufficient_evidence'
+  | 'needs_clarification'
+  | 'needs_review'
+  | 'conflict'
+  | 'failed'
+  | 'cancelled'
+
+export type AnswerItem = {
+  n: number
+  kind: 'value' | 'text'
+  value: string
+  unit: string | null
+  row: string | null
+  column: string | null
+  title: string | null
+  page_number: number
+  note: string
+  evidence_id: string
+  context_ids: string[]
+  viewer_url: string
+  document_title?: string
+  issuer?: string
+  period_label?: string | null
+  version_id?: string
+}
+
+export type AnswerResult = {
+  answer_kind: string | null
+  items: AnswerItem[]
+  calculation: { operation: 'sum' | 'subtract'; claim_numbers: number[]; status: string; message: string } | null
+  clarification: string | null
+  missing: string[]
+  scope: SearchScope[]
+  mentioned_issuers?: string[]
+}
+
+export type AnswerRunSummary = {
+  id: string
+  question: string
+  status: AnswerStatus
+  answer_kind: string | null
+  model: string
+  created_at: string
+}
+
+export type AnswerRun = AnswerRunSummary & {
+  stage: string
+  prompt_version: string
+  search_run_id: string | null
+  result: AnswerResult | null
+  candidates: { ref: string; element_id: string; kind: string; page_number: number; text: string; row: string | null }[]
+  llm_outputs: { attempt: number; output: unknown }[]
+  validation_errors: { attempt: number; errors: string[] }[]
+  error_code: string | null
+  error_message: string | null
+  timings: Record<string, number>
+  completed_at: string | null
+  langfuse_url: string | null
+  estimated_cost_usd: number | null
+}
+
 export type SearchRun = {
   id: string
   question: string
   status: 'succeeded' | 'no_scope' | 'running'
-  scope: { extraction_id: string; version_id: string; title: string; issuer: string; period_label: string | null }[]
+  scope: SearchScope[]
   expanded_terms: string[]
   embedding_model: string | null
   timings: { total_ms?: number; lexical_ms?: number; embedding_ms?: number; vector_ms?: number; terms?: string[] }
@@ -283,4 +356,11 @@ export const docsApi = {
     }),
   searchRun: (id: string) => request<SearchRun>(`/api/v1/search-runs/${id}`),
   chunk: (id: string) => request<ChunkDetail>(`/api/v1/chunks/${id}`),
+  answer: (question: string, issuerIds: string[], model: string | null) =>
+    request<AnswerRun>('/api/v1/answers', {
+      method: 'POST',
+      body: JSON.stringify({ question, issuer_ids: issuerIds, model }),
+    }),
+  answerRuns: () => request<AnswerRunSummary[]>('/api/v1/answer-runs'),
+  answerRun: (id: string) => request<AnswerRun>(`/api/v1/answer-runs/${id}`),
 }

@@ -40,6 +40,8 @@ SYNONYMS_PATH = Path(__file__).resolve().parents[3] / "search" / "synonyms.json"
 QUESTION_MAX = 1000
 # 字句スコアがこれ未満の候補は字句検索の順位に入れない
 LEXICAL_MIN_SCORE = 0.15
+# IDF（0〜1 に正規化）がこれ未満の語は、ほとんどのチャンクに出る語として類似度の計算から外す
+COMMON_TERM_IDF = 0.3
 # 質問から取り出す語（漢字・カタカナ・英数字の 2 文字以上の連なり）
 _TERM = re.compile(r"[一-龥々〆ヵヶ]{2,}|[ァ-ヴー・]{2,}|[A-Za-z0-9][A-Za-z0-9.\-]+")
 
@@ -87,6 +89,7 @@ async def scope(session: AsyncSession, settings: Settings, f: Filters) -> list[d
             Document.title,
             Issuer.name,
             DocumentVersion.period_label,
+            Issuer.id,
         )
         .join(DocumentVersion, DocumentVersion.id == Extraction.version_id)
         .join(Document, Document.id == DocumentVersion.document_id)
@@ -115,8 +118,9 @@ async def scope(session: AsyncSession, settings: Settings, f: Filters) -> list[d
             "title": t,
             "issuer": i,
             "period_label": p,
+            "issuer_id": str(iid),
         }
-        for e, v, d, t, i, p in rows
+        for e, v, d, t, i, p, iid in rows
     ]
 
 
@@ -153,7 +157,11 @@ async def lexical(
     n = int(counts[0]) or 1
     idf = [math.log((n + 1) / (int(df) + 1)) / math.log(n + 1) for df in counts[1:]]
     total = sum(kind * w for (_, kind), w in zip(words, idf, strict=True)) or 1.0
-    score = func.coalesce(func.word_similarity(bindparam("q", q), Chunk.search_text), literal(0.0, Float))
+    # 類似度は、対象資料のどこにでも出る語（会社名など）を除いた質問の語で測る。
+    # 質問全体だと「トヨタの営業利益は？」が「トヨタ」を含む本文に引っ張られる
+    distinctive = [w for (w, kind), d in zip(words, idf, strict=True) if kind == 1.0 and d >= COMMON_TERM_IDF]
+    q_sim = " ".join(distinctive) or q
+    score = func.coalesce(func.word_similarity(bindparam("q", q_sim), Chunk.search_text), literal(0.0, Float))
     for i, ((_, kind), pat, w) in enumerate(zip(words, patterns, idf, strict=True)):
         if w <= 0:
             continue

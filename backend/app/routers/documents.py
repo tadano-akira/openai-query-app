@@ -1,10 +1,10 @@
-"""資料Q&A の API（段階 1〜3: PDF 登録・抽出・レビュー・根拠表示）。すべてログイン必須。"""
+"""資料Q&A の API（PDF 登録・抽出・レビュー・根拠表示・検索・回答）。すべてログイン必須。"""
 
 import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
@@ -16,6 +16,7 @@ from app.db import get_session
 from app.doc_models import (
     DOCUMENT_TYPES,
     SCOPES,
+    AnswerRun,
     AuditEvent,
     Chunk,
     ChunkElement,
@@ -25,6 +26,7 @@ from app.doc_models import (
     Extraction,
     Issuer,
     Job,
+    LlmCall,
     Page,
     RetrievalHit,
     SearchRun,
@@ -32,10 +34,12 @@ from app.doc_models import (
 )
 from app.models import User, utcnow
 from app.routers.auth import current_user, require_csrf_header
+from app.services.answers import service as answers
 from app.services.chat import ChatError
 from app.services.pdf.extract import PARSER_VERSION
 from app.services.pdf.storage import StorageError, path_for, save_upload
 from app.services.search import retrieval
+from app.services.tracing import Tracer
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_csrf_header), Depends(current_user)])
 
@@ -937,3 +941,108 @@ async def get_chunk(chunk_id: uuid.UUID, session: AsyncSession = Depends(get_ses
         elements=[_element_out(el) for el in seen.values()],
         roles=roles,
     )
+
+
+# ---- 回答（段階 5: 根拠 ID の選択・検証・状態管理） ----------------------------------------------
+
+
+class AnswerIn(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    issuer_ids: list[uuid.UUID] = []
+    document_types: list[DocumentType] = []
+    version_ids: list[uuid.UUID] = []
+    model: str | None = None
+
+
+class AnswerRunSummary(BaseModel):
+    id: uuid.UUID
+    question: str
+    status: str
+    answer_kind: str | None
+    model: str
+    created_at: datetime
+
+
+class AnswerRunOut(AnswerRunSummary):
+    stage: str
+    prompt_version: str
+    search_run_id: uuid.UUID | None
+    result: dict[str, Any] | None
+    candidates: list[Any]
+    llm_outputs: list[Any]
+    validation_errors: list[Any]
+    error_code: str | None
+    error_message: str | None
+    timings: dict[str, Any]
+    completed_at: datetime | None
+    langfuse_url: str | None
+    estimated_cost_usd: float | None
+
+
+def _tracer(request: Request) -> Tracer:
+    return request.app.state.tracer
+
+
+async def _answer_run_out(session: AsyncSession, run: AnswerRun, tr: Tracer) -> AnswerRunOut:
+    cost = await session.scalar(
+        select(func.sum(LlmCall.estimated_cost_usd)).where(
+            (LlmCall.answer_run_id == run.id)
+            | ((LlmCall.search_run_id == run.search_run_id) & (LlmCall.search_run_id.is_not(None)))
+        )
+    )
+    return AnswerRunOut(
+        id=run.id,
+        question=run.question,
+        status=run.status,
+        answer_kind=run.answer_kind,
+        model=run.model,
+        created_at=run.created_at,
+        stage=run.stage,
+        prompt_version=run.prompt_version,
+        search_run_id=run.search_run_id,
+        result=run.result,
+        candidates=run.candidates,
+        llm_outputs=run.llm_outputs,
+        validation_errors=run.validation_errors,
+        error_code=run.error_code,
+        error_message=run.error_message,
+        timings=run.timings,
+        completed_at=run.completed_at,
+        langfuse_url=tr.trace_url(run.langfuse_trace_id),
+        estimated_cost_usd=cost,
+    )
+
+
+@router.post("/answers", response_model=AnswerRunOut)
+async def create_answer(
+    body: AnswerIn, session: AsyncSession = Depends(get_session), tr: Tracer = Depends(_tracer)
+):
+    """検索した根拠の候補から LLM に ID を選ばせ、検証に合格したものだけで回答を組み立てる"""
+    try:
+        run = await answers.answer(
+            session,
+            get_settings(),
+            tr,
+            body.question,
+            retrieval.Filters(body.issuer_ids, list(body.document_types), body.version_ids),
+            body.model,
+        )
+    except ChatError as e:
+        raise HTTPException(e.status_code, detail={"code": e.code, "message": e.message, **e.extra}) from e
+    return await _answer_run_out(session, run, tr)
+
+
+@router.get("/answer-runs", response_model=list[AnswerRunSummary])
+async def list_answer_runs(session: AsyncSession = Depends(get_session)):
+    runs = await session.scalars(select(AnswerRun).order_by(AnswerRun.created_at.desc()).limit(30))
+    return [AnswerRunSummary.model_validate(r, from_attributes=True) for r in runs]
+
+
+@router.get("/answer-runs/{run_id}", response_model=AnswerRunOut)
+async def get_answer_run(
+    run_id: uuid.UUID, session: AsyncSession = Depends(get_session), tr: Tracer = Depends(_tracer)
+):
+    run = await session.get(AnswerRun, run_id)
+    if run is None:
+        raise _err(404, "NOT_FOUND", "回答が見つかりません")
+    return await _answer_run_out(session, run, tr)

@@ -53,6 +53,8 @@ export const ERROR_LABELS: Record<string, string> = {
   secret_detected: '機密情報を検知したため送信を中止しました',
   secret_scan_unavailable: '機密情報の検査ができません',
   invalid_model: '選択できないモデル',
+  EVIDENCE_REJECTED: '根拠の検証に不合格',
+  invalid_json: 'AIの出力が不正',
 }
 
 export function errorLabel(code: string): string {

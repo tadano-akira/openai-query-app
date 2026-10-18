@@ -1,4 +1,4 @@
-import { FileText, Search, Upload } from 'lucide-react'
+import { FileText, MessageSquareQuote, Search, Upload } from 'lucide-react'
 
 import { AccountBar } from '@/components/AccountBar'
 import { AppNav } from '@/components/AppNav'
@@ -6,6 +6,7 @@ import { ChunkViewer } from '@/components/docs/ChunkViewer'
 import { DocumentList } from '@/components/docs/DocumentList'
 import { EvidenceViewer } from '@/components/docs/EvidenceViewer'
 import { ReviewPage } from '@/components/docs/ReviewPage'
+import { AnswerPage } from '@/components/docs/AnswerPage'
 import { SearchPage } from '@/components/docs/SearchPage'
 import { UploadForm } from '@/components/docs/UploadForm'
 import { VersionDetail } from '@/components/docs/VersionDetail'
@@ -23,7 +24,7 @@ function NavItem({ to, active, icon: Icon, children }: { to: string; active: boo
   )
 }
 
-/** 資料Q&A（段階 1〜3: PDF 登録・抽出・レビュー・根拠表示） */
+/** 資料Q&A（PDF 登録・抽出・レビュー・根拠表示・検索・回答） */
 export function DocsApp() {
   const { path, params } = useLocation()
   let content: React.ReactNode
@@ -34,6 +35,7 @@ export function DocsApp() {
   else if ((m = match('/viewer/evidence/:id', path)))
     content = <EvidenceViewer elementId={m.id} mode={params.get('mode') === 'html' ? 'html' : 'pdf'} />
   else if ((m = match('/viewer/chunk/:id', path))) content = <ChunkViewer key={m.id} chunkId={m.id} />
+  else if (match('/docs/answer', path)) content = <AnswerPage runId={params.get('run')} />
   else if (match('/docs/search', path)) content = <SearchPage runId={params.get('run')} />
   else if (match('/docs/upload', path)) content = <UploadForm key={params.get('document') ?? 'new'} documentId={params.get('document')} />
   else content = <DocumentList />
@@ -45,6 +47,9 @@ export function DocsApp() {
         <div className="space-y-3 p-3">
           <AppNav current="docs" />
           <nav className="space-y-0.5">
+            <NavItem to="/docs/answer" active={path === '/docs/answer'} icon={MessageSquareQuote}>
+              質問する
+            </NavItem>
             <NavItem to="/docs" active={path === '/docs'} icon={FileText}>
               資料一覧
             </NavItem>
@@ -57,7 +62,7 @@ export function DocsApp() {
           </nav>
         </div>
         <div className="text-muted-foreground mt-auto space-y-1 p-3 text-[11px]">
-          <p>引用つきの回答生成は次の段階（段階5）で追加します。今は根拠の候補を検索できます。</p>
+          <p>合算などの計算が必要な質問は、個々の値と根拠を示して「要確認」にします（計算は次の段階で対応）。</p>
           <p>OCRは使いません。画像だけのページは検索対象外です。</p>
         </div>
         <AccountBar />
