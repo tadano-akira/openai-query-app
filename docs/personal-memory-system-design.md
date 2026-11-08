@@ -3,7 +3,7 @@
 -   文書種別: PoC向け基本設計案
 -   対象アプリ: 独自AI Chat App
 -   作成日: 2026-11-09
--   改訂: 2026-11-09 個人情報の検知を対象外とし、機密情報検知の方針を現行実装に合わせた。未確定事項を確定し（19章）、既存実装との対応を追加した（2.2）
+-   改訂: 2026-11-09 個人情報の検知を対象外とし、機密情報検知の方針を現行実装に合わせた。未確定事項を確定し（19章）、既存実装との対応を追加した（2.2）。資料Q&Aの質問を記憶の作成元に追加した（4.5）
 -   ステータス: 設計確定（PoC）。実装は未着手
 
 ------------------------------------------------------------------------
@@ -69,7 +69,8 @@ APIプロセスから分離する。
 
 | 対象 | 現状 | 本設計での扱い |
 | --- | --- | --- |
-| 適用範囲 | チャットと資料Q&Aがある | 長期記憶はチャットだけに適用する。資料Q&Aは登録資料だけを根拠にするため、記憶を検索も抽出もしない |
+| 適用範囲 | チャットと資料Q&Aがある | 記憶の作成元はチャットと資料Q&Aの質問。記憶を回答に使うのはチャットだけ（4.5） |
+| `answer_runs` | `user_id` がない。質問1回ごとに独立している | `user_id`、`memory_enabled`、`memory_extracted_at` を追加する（6.9） |
 | `conversations` | `user_id` とプロジェクトの情報がない | `user_id`、`project_id`、`memory_enabled` を追加する（6.9） |
 | `messages` | 原文を保存済み。再実行のため1ターンに複数の回答がある | 既存を正本にする。AI発言の文脈には `turns.adopted_message_id` の回答だけを使う |
 | 会話の削除 | `hidden_at` による非表示のみ | 非表示は記憶に影響しない（14.4） |
@@ -96,6 +97,7 @@ flowchart TD
 
     ORCH --> MSG[(Conversation / Message Store)]
     ORCH --> Q[Persistent Job Queue]
+    QA[資料Q&A Answer API] --> Q
     Q --> EXT[Memory Extraction Worker]
     EXT --> PRES[Presidio 機密情報検知]
     EXT --> OAI
@@ -191,6 +193,36 @@ flowchart TD
 -   明示的なユーザー指示、複数回の観測、ユーザー承認を区別する。
 -   危険な操作やセキュリティ制約を、単なる好みとして弱めない。
 
+### 4.5 資料Q&A由来の記憶
+
+資料Q&Aの質問（`answer_runs.question`）も記憶の作成元にする。
+利用者が何を調べたかを、後のチャットで参照できるようにするため。
+
+**作る記憶**
+
+-   種別はEpisodicとSemanticに限る。ProjectとProceduralは作らない。
+-   Episodicは「いつ、どの企業の何を調べたか」を記録する。
+-   Semanticは、質問に明示された好みや関心を記録する（例：連結の数値で見たい）。
+-   出典として `answer_runs` への参照を持つ。
+
+**金額を記憶に入れない**
+
+-   抽出のLLMには、質問文、質問日時、対象の資料名、回答の状態だけを渡す。
+-   回答の値、計算結果、根拠の候補は渡さない。
+-   記憶には回答へのリンクだけを持たせ、値が必要なら回答を開く。
+-   資料の差し替えで古くなった数値が、チャットで根拠なしに使われるのを防ぐため。
+
+**資料Q&Aの回答には記憶を使わない**
+
+-   回答処理（`answers.service`）は記憶を検索しない。LLMにも渡さない。
+-   質問の解釈や対象企業の補完にも使わない。
+-   登録資料だけを根拠にするという資料Q&Aの原則を維持するため。
+
+**対象とする回答の状態**
+
+-   対象：`completed`、`needs_review`、`insufficient_evidence`、`needs_clarification`
+-   対象外：`running`、`failed`、`cancelled`
+
 ------------------------------------------------------------------------
 
 ## 5. Markdown外部記憶
@@ -259,6 +291,7 @@ memory/
 | `users` | 既存・列追加 | 記憶機能全体のON/OFF（6.9） |
 | `conversations` | 既存・列追加 | 会話セッション（6.9） |
 | `messages` | 既存 | ユーザー・AIの発言原文 |
+| `answer_runs` | 既存・列追加 | 資料Q&Aの質問と回答（6.9） |
 | `jobs` | 既存・列追加 | 抽出・統合ジョブ（12章） |
 | `projects` | 新規 | プロジェクト（6.8） |
 | `memory_items` | 新規 | 抽出した記憶 |
@@ -311,14 +344,16 @@ Embeddingモデルは資料Q&Aと同じ `text-embedding-3-small`（1536次元）
 | --- | --- | --- |
 | `id` | UUID | 主キー |
 | `memory_id` | UUID | 対象記憶 |
-| `message_id` | UUID | 出典メッセージ |
+| `message_id` | UUID NULL | 出典メッセージ（チャット） |
+| `answer_run_id` | UUID NULL | 出典の質問（資料Q&A） |
 | `source_role` | VARCHAR | user のみ（CHECK制約） |
 | `evidence_excerpt` | TEXT NULL | 必要最小限の根拠抜粋 |
 | `created_at` | TIMESTAMPTZ | 登録日時 |
 
 1つの記憶が複数の発言から導かれる場合に対応する。
-`(memory_id, message_id)` を一意にする。
-根拠にできるのはユーザーの発言だけとする。
+`message_id` と `answer_run_id` は、どちらか一方だけを必須とする（CHECK制約）。
+`(memory_id, message_id)` と `(memory_id, answer_run_id)` をそれぞれ一意にする。
+根拠にできるのはユーザーの発言（チャットの発言と資料Q&Aの質問）だけとする。
 AIの発言は文脈として読むが、記憶の根拠にしない。
 
 ### 6.5 memory_relations
@@ -351,7 +386,7 @@ AIの発言は文脈として読むが、記憶の根拠にしない。
 -   `memory_items(user_id, status, memory_type)` の複合インデックス
 -   `memory_items(project_id, status)` のインデックス
 -   `memory_items(valid_until)` のインデックス
--   `memory_sources(message_id)` のインデックス
+-   `memory_sources(message_id)` と `memory_sources(answer_run_id)` のインデックス
 -   `memory_relations(from_memory_id)` と
     `memory_relations(to_memory_id)` のインデックス
 -   `content` / `summary` に `pg_trgm` のGINインデックス
@@ -380,6 +415,9 @@ PostgreSQLの標準の全文検索は日本語を分かち書きしないため�
 | `conversations` | `project_id` | UUID NULL | 手動で選択したプロジェクト |
 | `conversations` | `memory_enabled` | BOOLEAN | この会話で記憶を使うか。既定はtrue |
 | `conversations` | `memory_extracted_through` | INTEGER | 抽出済みの最後の `turns.seq`（7.7） |
+| `answer_runs` | `user_id` | UUID | 所有ユーザー。既存の行は現在の唯一のユーザーで埋める |
+| `answer_runs` | `memory_enabled` | BOOLEAN | この質問を記憶の作成元にするか。既定はtrue |
+| `answer_runs` | `memory_extracted_at` | TIMESTAMPTZ NULL | 記憶の抽出が済んだ日時（7.7） |
 | `jobs` | `run_after` | TIMESTAMPTZ NULL | この時刻まで実行しない（7.7） |
 
 ### 6.10 memory_usages
@@ -407,7 +445,7 @@ PostgreSQLの標準の全文検索は日本語を分かち書きしないため�
 -   繰り返し確認された作業パターン
 -   後続の会話で役立つ重要な出来事
 
-根拠にできるのはユーザーの発言だけとする。AIの回答とWeb検索の結果だけに現れる情報は抽出しない。
+根拠にできるのはユーザーの発言（チャットの発言と資料Q&Aの質問）だけとする。AIの回答、Web検索の結果、資料Q&Aの回答だけに現れる情報は抽出しない。
 
 ### 7.2 原則として保存しない情報
 
@@ -467,7 +505,7 @@ Schemaでは、列挙値、必須項目、数値範囲、文字数上限を指�
 発言には実行内だけのID（M1、M2…）を振り、LLMにはそのIDで出典を返させる。サーバーは次を検証する。
 
 -   `evidence_message_id` が提示した発言のIDである。
--   その発言の `role` が user である。
+-   その発言がユーザーの発言（`role` が user のメッセージ、または資料Q&Aの質問）である。
 -   `evidence` の文字列がその発言の原文に含まれる。
 
 検証に通らない候補は保存しない。`memory_sources.evidence_excerpt` には原文から取り出した文字列を保存する。
@@ -503,6 +541,13 @@ Schemaでは、列挙値、必須項目、数値範囲、文字数上限を指�
 
 ジョブが再実行されても、処理済みのターンは対象にならない。
 抽出の直前に `memory_enabled` を再確認し、無効なら何もせず終了する。
+
+資料Q&Aは質問1回を処理の単位とする。
+
+1.  回答が4.5の対象の状態で完了したら、その質問の抽出ジョブを登録する。
+2.  `run_after` は回答の完了から10分後とする。
+3.  処理が成功したら、記憶の保存と同じトランザクションで `memory_extracted_at` を設定する。
+4.  `memory_extracted_at` が設定済みの質問は処理しない。
 
 抽出モデルは設定 `MEMORY_EXTRACTION_MODEL` で指定する。初期値は `gpt-5.6-luna` とし、17章の評価で見直す。
 
@@ -630,6 +675,7 @@ AIの役割、制約、記憶の扱い方
 -   回答に使用した記憶IDをログに残す。
 -   検索できなかった情報について、過去に話したと断定しない。
 -   記憶は `instructions` に入れず、`input` 側に参照データとして渡す。
+-   資料Q&A由来の記憶は「調べたことがある」という情報として渡す。金額を答えるには資料Q&Aの回答を開くよう案内する。
 -   記憶に使うトークンの上限は初期値2,000とする。既存の文脈の上限（60,000字）の内側に収める。
 -   質問のEmbeddingは、機密情報の検知を通過してから生成する。
 -   記憶の検索に失敗しても、記憶なしで回答を続ける。失敗はログとLangfuseに記録する。
@@ -658,6 +704,7 @@ AIの役割、制約、記憶の扱い方
 | POST | `/api/v1/memory-documents/import` | Markdown取込 |
 
 `user_id` はリクエストで受け取らず、認証済みのユーザーから決める。
+既存の `POST /api/v1/answers` には、任意の項目 `memory_enabled`（既定はtrue）を追加する。
 
 ### 11.1 検索APIのリクエスト例
 
@@ -797,7 +844,7 @@ Presidioは万能な秘密情報検出器ではない。既存のGitleaks等の�
 -   memory_relations
 -   memory_versions
 -   Markdown出力・キャッシュ
--   必要に応じて元のmessages / conversations
+-   必要に応じて元のmessages / conversations / answer_runs
 -   バックアップの保持期限・削除サイクル
 
 記憶だけを削除する操作と、会話原文を含めて削除する操作はUI上も区別する。
@@ -840,6 +887,12 @@ React側にMemory Management画面を設ける。
 -   会話ごとの「この会話は記憶しない」スイッチ（既定は記憶する）
 -   回答ごとに、使用した記憶の件数と一覧を表示
 
+### 15.4 資料Q&A画面への追加
+
+-   質問ごとの「この質問は記憶しない」スイッチ（既定は記憶する）
+
+記憶の詳細画面には、出典として資料Q&Aの回答（`/docs/answer?run={id}`）へのリンクを表示する。
+
 ------------------------------------------------------------------------
 
 ## 16. 開発フェーズ
@@ -848,6 +901,7 @@ React側にMemory Management画面を設ける。
 
 -   `conversations` への列追加、`jobs.run_after`、Memory用Worker
 -   memory_items / memory_embeddings / memory_sources / memory_usages
+    （`memory_sources` は資料Q&Aの出典も持てる形で作る）
 -   Profile / Episodic Memory
 -   Embedding生成
 -   ハイブリッド検索の基本実装
@@ -862,6 +916,7 @@ React側にMemory Management画面を設ける。
 ### Phase 2：プロジェクト・外部記憶
 
 -   projects、会話のプロジェクト選択、Project Memory
+-   資料Q&Aの質問からの記憶の作成
 -   Procedural Memory
 -   Markdown Export / Import
 -   記憶の出典表示
@@ -913,6 +968,9 @@ React側にMemory Management画面を設ける。
 10. 記憶対象にすべきでない雑談
 11. AIの回答にしか現れない情報（記憶しないこと）
 12. 「この会話は記憶しない」を設定した会話
+13. 資料Q&Aの質問から作った記憶を、チャットで参照する会話
+14. 資料Q&Aの回答の金額が記憶に入らないこと
+15. 資料Q&Aの回答処理に記憶が渡らないこと
 
 ### 17.2 評価観点
 
@@ -1016,10 +1074,12 @@ Milvusの機能と必要リソースは本書の作成時点の情報である�
 | 11 | Consolidation | 定期Worker |
 | 12 | Langfuseへの記録 | 必要最小限（機密情報を検知した入力は送らない） |
 | 13 | 個人情報の検知 | 行わない（秘密情報の検知のみ） |
-| 14 | 適用範囲 | チャット全体で既定ON。会話ごとにOFFにでき、全体のON/OFFも持つ。資料Q&Aには適用しない |
+| 14 | 適用範囲 | チャットと資料Q&Aの質問を既定で記憶する。会話・質問ごとにOFFにでき、全体のON/OFFも持つ |
 | 15 | プロジェクトの紐づけ | 会話ごとに手動で選択 |
-| 16 | 記憶の根拠 | ユーザーの発言のみ。AIの発言は文脈として読むだけ |
+| 16 | 記憶の根拠 | ユーザーの発言（チャットの発言と資料Q&Aの質問）のみ。AIの発言は文脈として読むだけ |
 | 17 | 抽出モデル | 設定で指定。初期値 `gpt-5.6-luna`（17章の評価で見直す） |
+| 18 | 資料Q&Aとの連携 | 記憶の作成のみ。資料Q&Aの回答処理には記憶を使わない（4.5） |
+| 19 | 資料Q&Aの回答の値 | 記憶に含めない。質問と回答へのリンクだけを持つ（4.5） |
 
 ------------------------------------------------------------------------
 
